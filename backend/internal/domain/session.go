@@ -29,7 +29,9 @@ type User struct {
 // разворачивает Owner в эту пару и обратно (см. ownerColumns/ownerWhere
 // в repository/session.go).
 type Session struct {
-	ID              uuid.UUID
+	ID     uuid.UUID
+	UserID uuid.UUID
+
 	Owner           Owner
 	ScenarioID      int64
 	ScenarioCode    string

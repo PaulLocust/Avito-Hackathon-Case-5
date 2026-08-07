@@ -86,6 +86,27 @@ type fakeSessions struct {
 	active map[string]domain.Session
 }
 
+func (f *fakeSessions) ClaimByGuest(
+	_ context.Context,
+	_ uuid.UUID,
+	_ uuid.UUID,
+) error {
+	return nil
+}
+
+func (f *fakeSessions) GetActiveByOwnerScenario(
+	_ context.Context,
+	owner domain.Owner,
+	scenarioCode string,
+) (domain.Session, error) {
+	session, ok := f.active[scenarioCode]
+	if !ok {
+		return domain.Session{}, domain.ErrNotFound
+	}
+
+	return session, nil
+}
+
 func (f *fakeSessions) GetActiveByUserScenario(
 	_ context.Context,
 	_ uuid.UUID,

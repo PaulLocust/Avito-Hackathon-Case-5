@@ -3,8 +3,6 @@ package repository
 import (
 	"context"
 	"errors"
-	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -20,93 +18,128 @@ type sessionRepository struct {
 
 var _ SessionRepository = (*sessionRepository)(nil)
 
-// uniqueViolation — код SQLSTATE класса 23 (нарушение целостности).
-const uniqueViolation = "23505"
+func ownerColumns(owner domain.Owner) (userID, guestSessionID *uuid.UUID) {
+	id := owner.ID
+	if owner.IsUser() {
+		return &id, nil
+	}
+	return nil, &id
+}
 
-// sessionColumns — колонки строки sessions для SELECT и RETURNING.
-const sessionColumns = `id, user_id, scenario_id, scenario_code, scenario_version,
-	status, current_step_code, score, started_at, finished_at`
+func ownerWhere(owner domain.Owner) (column string, value uuid.UUID) {
+	if owner.IsUser() {
+		return "user_id", owner.ID
+	}
+	return "guest_session_id", owner.ID
+}
 
-// Create сохраняет сессию. Нарушение sessions_single_active_idx — у клиента
-// уже есть незавершённая сессия по сценарию: возвращаем её идентификатор,
-// чтобы клиент предложил продолжить (FR12).
-func (r *sessionRepository) Create(ctx context.Context, session domain.Session) (domain.Session, error) {
-	if session.ID == uuid.Nil {
-		session.ID = uuid.New()
+const sessionColumns = `
+	id, user_id, guest_session_id, scenario_id, scenario_code, scenario_version,
+	status, current_step_code, score, started_at, finished_at
+`
+
+func scanSession(row pgx.Row) (domain.Session, error) {
+	var (
+		s       domain.Session
+		userID  *uuid.UUID
+		guestID *uuid.UUID
+	)
+
+	err := row.Scan(
+		&s.ID, &userID, &guestID, &s.ScenarioID, &s.ScenarioCode, &s.ScenarioVersion,
+		&s.Status, &s.CurrentStepCode, &s.Score, &s.StartedAt, &s.FinishedAt,
+	)
+	if err != nil {
+		return domain.Session{}, err
 	}
 
-	query := `
-		INSERT INTO sessions (id, user_id, scenario_id, scenario_code, scenario_version,
-		                      status, current_step_code, score)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING ` + sessionColumns
+	switch {
+	case userID != nil:
+		s.Owner = domain.UserOwner(*userID)
+	case guestID != nil:
+		s.Owner = domain.GuestOwner(*guestID)
+	}
 
-	created, err := scanSession(r.pool.QueryRow(ctx, query,
-		session.ID, session.UserID, session.ScenarioID, session.ScenarioCode,
-		session.ScenarioVersion, string(session.Status), session.CurrentStepCode, session.Score,
-	))
+	return s, nil
+}
+
+func (r *sessionRepository) Create(ctx context.Context, session domain.Session) (domain.Session, error) {
+	userID, guestID := ownerColumns(session.Owner)
+
+	row := r.pool.QueryRow(ctx, `
+		INSERT INTO sessions (
+			id, user_id, guest_session_id, scenario_id, scenario_code, scenario_version,
+			status, current_step_code, score, started_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		RETURNING `+sessionColumns,
+		session.ID, userID, guestID, session.ScenarioID, session.ScenarioCode, session.ScenarioVersion,
+		session.Status, session.CurrentStepCode, session.Score, session.StartedAt,
+	)
+
+	result, err := scanSession(row)
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
-			active, getErr := r.GetActiveByUserScenario(ctx, session.UserID, session.ScenarioCode)
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "sessions_single_active_idx" {
+			active, getErr := r.GetActiveByOwnerScenario(ctx, session.Owner, session.ScenarioCode)
 			if getErr != nil {
-				return domain.Session{}, fmt.Errorf("чтение активной сессии после конфликта: %w", getErr)
+				return domain.Session{}, err
 			}
-
 			return domain.Session{}, &domain.ActiveSessionError{SessionID: active.ID}
 		}
-
-		return domain.Session{}, fmt.Errorf("создание сессии: %w", err)
+		return domain.Session{}, err
 	}
 
-	return created, nil
+	return result, nil
 }
 
 func (r *sessionRepository) Get(ctx context.Context, id uuid.UUID) (domain.Session, error) {
-	session, err := scanSession(r.pool.QueryRow(ctx,
-		"SELECT "+sessionColumns+" FROM sessions WHERE id = $1", id))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Session{}, domain.ErrNotFound
-		}
+	row := r.pool.QueryRow(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE id = $1`, id)
 
-		return domain.Session{}, fmt.Errorf("чтение сессии %s: %w", id, err)
+	s, err := scanSession(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Session{}, domain.ErrNotFound
 	}
-
-	return session, nil
+	return s, err
 }
 
-// TODO(M2): единственная незавершённая сессия пользователя для блока
-// «продолжить тренировку» (FR12); не нужен training-эндпоинтам.
-func (r *sessionRepository) GetActiveByUser(ctx context.Context, userID uuid.UUID) (domain.Session, error) {
-	_, _ = ctx, userID
-	return domain.Session{}, domain.ErrNotImplemented
+func (r *sessionRepository) GetActiveByOwner(ctx context.Context, owner domain.Owner) (domain.Session, error) {
+	col, val := ownerWhere(owner)
+
+	row := r.pool.QueryRow(ctx,
+		`SELECT `+sessionColumns+` FROM sessions
+		 WHERE status = 'in_progress' AND `+col+` = $1
+		 ORDER BY started_at DESC LIMIT 1`,
+		val,
+	)
+
+	s, err := scanSession(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Session{}, domain.ErrNotFound
+	}
+	return s, err
 }
 
-func (r *sessionRepository) GetActiveByUserScenario(
+func (r *sessionRepository) GetActiveByOwnerScenario(
 	ctx context.Context,
-	userID uuid.UUID,
+	owner domain.Owner,
 	scenarioCode string,
 ) (domain.Session, error) {
-	session, err := scanSession(r.pool.QueryRow(ctx,
-		"SELECT "+sessionColumns+
-			" FROM sessions WHERE user_id = $1 AND scenario_code = $2 AND status = 'in_progress'"+
-			" ORDER BY started_at DESC LIMIT 1",
-		userID, scenarioCode))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Session{}, domain.ErrNotFound
-		}
+	col, val := ownerWhere(owner)
 
-		return domain.Session{}, fmt.Errorf("поиск активной сессии по сценарию %s: %w", scenarioCode, err)
+	row := r.pool.QueryRow(ctx,
+		`SELECT `+sessionColumns+` FROM sessions
+		 WHERE status = 'in_progress' AND `+col+` = $1 AND scenario_code = $2
+		 LIMIT 1`,
+		val, scenarioCode,
+	)
+
+	s, err := scanSession(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Session{}, domain.ErrNotFound
 	}
-
-	return session, nil
+	return s, err
 }
 
-// SaveAnswer одной транзакцией фиксирует ответ и начисляет баллы: инвариант
-// «балл сессии = сумма весов ответов» держится схемой, а не бизнес-логикой.
-// finished переводит сессию в completed и проставляет finished_at (FR14).
 func (r *sessionRepository) SaveAnswer(
 	ctx context.Context,
 	answer domain.Answer,
@@ -115,226 +148,197 @@ func (r *sessionRepository) SaveAnswer(
 ) (domain.Session, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return domain.Session{}, fmt.Errorf("начало транзакции фиксации ответа: %w", err)
+		return domain.Session{}, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer tx.Rollback(ctx)
 
-	insert := `
-		INSERT INTO answers (session_id, step_code, option_code, outcome, score_delta,
-		                     risk_signal_codes, position)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`
-
-	if _, execErr := tx.Exec(ctx, insert,
-		answer.SessionID, answer.StepCode, answer.OptionCode,
-		string(answer.Outcome), answer.ScoreDelta, answer.RiskSignalCodes, answer.Position,
-	); execErr != nil {
-		return domain.Session{}, fmt.Errorf("фиксация ответа на шаг %s: %w", answer.StepCode, execErr)
+	_, err = tx.Exec(ctx, `
+		INSERT INTO answers (
+			session_id, step_code, option_code, outcome, score_delta,
+			risk_signal_codes, position, answered_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		answer.SessionID, answer.StepCode, answer.OptionCode, answer.Outcome,
+		answer.ScoreDelta, answer.RiskSignalCodes, answer.Position, answer.AnsweredAt,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return domain.Session{}, domain.ErrStepNotCurrent
+		}
+		return domain.Session{}, err
 	}
 
+	var row pgx.Row
 	if finished {
-		if _, execErr := tx.Exec(ctx, `
+		row = tx.QueryRow(ctx, `
 			UPDATE sessions
-			SET score = score + $1, current_step_code = NULL,
+			SET score = score + $2, current_step_code = $3,
 			    status = 'completed', finished_at = now()
-			WHERE id = $2`,
-			answer.ScoreDelta, answer.SessionID,
-		); execErr != nil {
-			return domain.Session{}, fmt.Errorf("завершение сессии %s: %w", answer.SessionID, execErr)
-		}
-	} else {
-		if _, execErr := tx.Exec(ctx, `
-			UPDATE sessions
-			SET score = score + $1, current_step_code = $3
-			WHERE id = $2`,
-			answer.ScoreDelta, answer.SessionID, nextStepCode,
-		); execErr != nil {
-			return domain.Session{}, fmt.Errorf("перевод сессии %s на следующий шаг: %w", answer.SessionID, execErr)
-		}
-	}
-
-	session, err := scanSession(tx.QueryRow(ctx,
-		"SELECT "+sessionColumns+" FROM sessions WHERE id = $1", answer.SessionID))
-	if err != nil {
-		return domain.Session{}, fmt.Errorf("чтение сессии %s после ответа: %w", answer.SessionID, err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return domain.Session{}, fmt.Errorf("завершение транзакции ответа: %w", err)
-	}
-
-	return session, nil
-}
-
-// GetAnswer читает ответ на шаг; для идемпотентности повторной отправки
-// (FR13) отсутствие строки — domain.ErrNotFound.
-func (r *sessionRepository) GetAnswer(
-	ctx context.Context,
-	sessionID uuid.UUID,
-	stepCode string,
-) (domain.Answer, error) {
-	var (
-		answer  domain.Answer
-		outcome string
-	)
-
-	err := r.pool.QueryRow(ctx, `
-		SELECT id, session_id, step_code, option_code, outcome, score_delta,
-		       risk_signal_codes, position, answered_at
-		FROM answers
-		WHERE session_id = $1 AND step_code = $2`,
-		sessionID, stepCode,
-	).Scan(&answer.ID, &answer.SessionID, &answer.StepCode, &answer.OptionCode,
-		&outcome, &answer.ScoreDelta, &answer.RiskSignalCodes, &answer.Position, &answer.AnsweredAt)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Answer{}, domain.ErrNotFound
-		}
-
-		return domain.Answer{}, fmt.Errorf("чтение ответа на шаг %s: %w", stepCode, err)
-	}
-
-	answer.Outcome = domain.Outcome(outcome)
-
-	return answer, nil
-}
-
-// ListAnswers возвращает ответы в порядке прохождения (position).
-func (r *sessionRepository) ListAnswers(ctx context.Context, sessionID uuid.UUID) ([]domain.Answer, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT id, session_id, step_code, option_code, outcome, score_delta,
-		       risk_signal_codes, position, answered_at
-		FROM answers
-		WHERE session_id = $1
-		ORDER BY position`,
-		sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("выбор ответов сессии %s: %w", sessionID, err)
-	}
-	defer rows.Close()
-
-	answers := make([]domain.Answer, 0)
-	for rows.Next() {
-		var (
-			answer  domain.Answer
-			outcome string
+			WHERE id = $1
+			RETURNING `+sessionColumns,
+			answer.SessionID, answer.ScoreDelta, nextStepCode,
 		)
-
-		if err := rows.Scan(&answer.ID, &answer.SessionID, &answer.StepCode, &answer.OptionCode,
-			&outcome, &answer.ScoreDelta, &answer.RiskSignalCodes, &answer.Position, &answer.AnsweredAt); err != nil {
-			return nil, fmt.Errorf("чтение ответа сессии %s: %w", sessionID, err)
-		}
-
-		answer.Outcome = domain.Outcome(outcome)
-		answers = append(answers, answer)
+	} else {
+		row = tx.QueryRow(ctx, `
+			UPDATE sessions
+			SET score = score + $2, current_step_code = $3
+			WHERE id = $1
+			RETURNING `+sessionColumns,
+			answer.SessionID, answer.ScoreDelta, nextStepCode,
+		)
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("перебор ответов сессии %s: %w", sessionID, err)
-	}
-
-	return answers, nil
-}
-
-// Abandon прерывает только сессии в статусе in_progress: повторный вызов
-// завершённой или уже прерванной сессии — domain.ErrNotFound.
-func (r *sessionRepository) Abandon(ctx context.Context, id uuid.UUID) error {
-	tag, err := r.pool.Exec(ctx, `
-		UPDATE sessions
-		SET status = 'abandoned', finished_at = now()
-		WHERE id = $1 AND status = 'in_progress'`, id)
-	if err != nil {
-		return fmt.Errorf("прерывание сессии %s: %w", id, err)
-	}
-
-	if tag.RowsAffected() == 0 {
-		return domain.ErrNotFound
-	}
-
-	return nil
-}
-
-// ListCompleted — завершённые попытки, свежие первыми.
-func (r *sessionRepository) ListCompleted(
-	ctx context.Context,
-	userID uuid.UUID,
-	scenarioCode string,
-) ([]domain.Session, error) {
-	rows, err := r.pool.Query(ctx,
-		"SELECT "+sessionColumns+" FROM sessions"+
-			" WHERE user_id = $1 AND scenario_code = $2 AND status = 'completed'"+
-			" ORDER BY finished_at DESC",
-		userID, scenarioCode)
-	if err != nil {
-		return nil, fmt.Errorf("выбор истории сценария %s: %w", scenarioCode, err)
-	}
-	defer rows.Close()
-
-	sessions := make([]domain.Session, 0)
-	for rows.Next() {
-		session, err := scanSession(rows)
-		if err != nil {
-			return nil, fmt.Errorf("чтение завершённой сессии: %w", err)
-		}
-
-		sessions = append(sessions, session)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("перебор истории сценария %s: %w", scenarioCode, err)
-	}
-
-	return sessions, nil
-}
-
-// PreviousCompleted — самая свежая завершённая попытка, завершившаяся раньше,
-// чем сессия before: для сравнения результата (FR23).
-func (r *sessionRepository) PreviousCompleted(
-	ctx context.Context,
-	userID uuid.UUID,
-	scenarioCode string,
-	before uuid.UUID,
-) (domain.Session, error) {
-	session, err := scanSession(r.pool.QueryRow(ctx,
-		"SELECT "+sessionColumns+" FROM sessions"+
-			" WHERE user_id = $1 AND scenario_code = $2 AND status = 'completed'"+
-			" AND finished_at < (SELECT finished_at FROM sessions WHERE id = $3)"+
-			" ORDER BY finished_at DESC LIMIT 1",
-		userID, scenarioCode, before))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Session{}, domain.ErrNotFound
-		}
-
-		return domain.Session{}, fmt.Errorf("поиск предыдущей попытки по сценарию %s: %w", scenarioCode, err)
-	}
-
-	return session, nil
-}
-
-// scanSession читает строку sessions в доменную модель; nullable-колонки
-// (current_step_code, finished_at) разворачиваем в пустые значения.
-func scanSession(row pgx.Row) (domain.Session, error) {
-	var (
-		session     domain.Session
-		status      string
-		currentStep *string
-		finishedAt  *time.Time
-	)
-
-	err := row.Scan(
-		&session.ID, &session.UserID, &session.ScenarioID, &session.ScenarioCode,
-		&session.ScenarioVersion, &status, &currentStep, &session.Score,
-		&session.StartedAt, &finishedAt,
-	)
+	result, err := scanSession(row)
 	if err != nil {
 		return domain.Session{}, err
 	}
 
-	session.Status = domain.SessionStatus(status)
-	if currentStep != nil {
-		session.CurrentStepCode = *currentStep
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Session{}, err
 	}
-	session.FinishedAt = finishedAt
 
-	return session, nil
+	return result, nil
+}
+
+func (r *sessionRepository) GetAnswer(ctx context.Context, sessionID uuid.UUID, stepCode string) (domain.Answer, error) {
+	var a domain.Answer
+
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, session_id, step_code, option_code, outcome, score_delta,
+		       risk_signal_codes, position, answered_at
+		FROM answers WHERE session_id = $1 AND step_code = $2`,
+		sessionID, stepCode,
+	).Scan(&a.ID, &a.SessionID, &a.StepCode, &a.OptionCode, &a.Outcome,
+		&a.ScoreDelta, &a.RiskSignalCodes, &a.Position, &a.AnsweredAt)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Answer{}, domain.ErrNotFound
+	}
+	return a, err
+}
+
+func (r *sessionRepository) ListAnswers(ctx context.Context, sessionID uuid.UUID) ([]domain.Answer, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, session_id, step_code, option_code, outcome, score_delta,
+		       risk_signal_codes, position, answered_at
+		FROM answers WHERE session_id = $1 ORDER BY position ASC`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []domain.Answer
+	for rows.Next() {
+		var a domain.Answer
+		if err := rows.Scan(&a.ID, &a.SessionID, &a.StepCode, &a.OptionCode, &a.Outcome,
+			&a.ScoreDelta, &a.RiskSignalCodes, &a.Position, &a.AnsweredAt); err != nil {
+			return nil, err
+		}
+		result = append(result, a)
+	}
+	return result, rows.Err()
+}
+
+func (r *sessionRepository) Abandon(ctx context.Context, id uuid.UUID) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE sessions SET status = 'abandoned', finished_at = now()
+		WHERE id = $1 AND status = 'in_progress'`,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrSessionFinished
+	}
+	return nil
+}
+
+func (r *sessionRepository) ListCompleted(ctx context.Context, owner domain.Owner, scenarioCode string) ([]domain.Session, error) {
+	col, val := ownerWhere(owner)
+
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+sessionColumns+` FROM sessions
+		 WHERE `+col+` = $1 AND scenario_code = $2 AND status = 'completed'
+		 ORDER BY finished_at DESC`,
+		val, scenarioCode,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []domain.Session
+	for rows.Next() {
+		s, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, s)
+	}
+	return result, rows.Err()
+}
+
+func (r *sessionRepository) PreviousCompleted(
+	ctx context.Context,
+	owner domain.Owner,
+	scenarioCode string,
+	before uuid.UUID,
+) (domain.Session, error) {
+	col, val := ownerWhere(owner)
+
+	row := r.pool.QueryRow(ctx, `
+		SELECT `+sessionColumns+` FROM sessions
+		WHERE `+col+` = $1 AND scenario_code = $2 AND status = 'completed'
+		  AND finished_at < (SELECT finished_at FROM sessions WHERE id = $3)
+		ORDER BY finished_at DESC LIMIT 1`,
+		val, scenarioCode, before,
+	)
+
+	s, err := scanSession(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Session{}, domain.ErrNotFound
+	}
+	return s, err
+}
+
+func (r *sessionRepository) ClaimByGuest(ctx context.Context, guestSessionID, userID uuid.UUID) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Если у аккаунта уже есть незавершённый сценарий, сохраняем его, а
+	// конфликтующую гостевую сессию помечаем прерванной. Завершённые результаты
+	// в любом случае переходят в аналитику пользователя.
+	_, err = tx.Exec(ctx, `
+		UPDATE sessions AS guest
+		SET status = 'abandoned', finished_at = now()
+		WHERE guest.guest_session_id = $1
+		  AND guest.status = 'in_progress'
+		  AND EXISTS (
+			SELECT 1 FROM sessions AS user_session
+			WHERE user_session.user_id = $2
+			  AND user_session.scenario_code = guest.scenario_code
+			  AND user_session.status = 'in_progress'
+		  )`,
+		guestSessionID, userID,
+	)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE sessions SET user_id = $2, guest_session_id = NULL
+		WHERE guest_session_id = $1`,
+		guestSessionID, userID,
+	)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }

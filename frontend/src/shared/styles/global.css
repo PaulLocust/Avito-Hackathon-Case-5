@@ -1,0 +1,145 @@
+:root {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background: #f5f5f5;
+}
+
+.app-layout {
+  min-height: 100vh;
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+}
+
+.app-header-inner {
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.app-brand {
+  color: inherit;
+  white-space: nowrap;
+}
+
+.app-brand-title {
+  font-size: 16px;
+}
+
+.app-menu {
+  background: transparent;
+  border-bottom: none;
+}
+
+.app-header-actions {
+  overflow-x: auto;
+}
+
+.app-content {
+  max-width: 1080px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+.app-footer {
+  text-align: center;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.state-block {
+  display: flex;
+  justify-content: center;
+  padding: 48px 16px;
+}
+
+.auth-page {
+  max-width: 420px;
+  margin: 0 auto;
+}
+
+/* Сообщение-пузырь диалога тренажёра (USR3: контекст не теряется). */
+.chat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-bubble {
+  max-width: 480px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-bubble--counterparty {
+  align-self: flex-start;
+  background: #fff;
+  border: 1px solid #f0f0f0;
+}
+
+.chat-bubble--narrator {
+  align-self: flex-start;
+  background: #e6f4ff;
+  border: 1px solid #91caff;
+}
+
+.chat-bubble--platform {
+  align-self: flex-start;
+  background: #f6ffed;
+  border: 1px solid #b7eb8f;
+}
+
+.chat-bubble--user {
+  align-self: flex-end;
+  background: #1677ff;
+  color: #fff;
+}
+
+.chat-bubble--sender {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-bubble--sender .chat-sender-label {
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+@media (max-width: 575px) {
+  .app-brand-title {
+    font-size: 14px;
+  }
+
+  .app-content {
+    padding: 16px 12px 32px;
+  }
+}

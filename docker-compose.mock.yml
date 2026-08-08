@@ -1,0 +1,32 @@
+# Профиль демо: фронтенд против мок-сервера Prism вместо реального бэкенда.
+# Запуск: docker compose -f docker-compose.yml -f docker-compose.mock.yml up --build
+# Мок отвечает примерами из api/openapi.yaml, поэтому вся бизнес-логика
+# (авторизация, ветвление, подсчёт баллов) не выполняется — это только
+# проверка интерфейса (M6).
+
+name: antiscam-trainer-mock
+
+services:
+  mock:
+    image: stoplight/prism:4
+    container_name: antiscam-mock
+    command: mock -h 0.0.0.0 /tmp/openapi.yaml
+    volumes:
+      - ./api:/tmp
+    ports:
+      - "${MOCK_PORT:-4010}:4010"
+    healthcheck:
+      # localhost в контейнере резолвится в ::1, а Prism слушает IPv4.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4010/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    volumes:
+      - ./frontend/nginx.mock.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      mock:
+        condition: service_healthy

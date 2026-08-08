@@ -267,6 +267,24 @@ make help          # весь список команд
 make run
 ```
 
+Демо интерфейса без готового бэкенда — фронтенд против мок-сервера Prism
+(отвечает примерами из `api/openapi.yaml`, бизнес-логика не выполняется):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.mock.yml up -d
+# интерфейс на http://localhost:3000, мок на http://localhost:4010
+```
+
+Локальная разработка фронтенда (`frontend/`):
+
+```bash
+npm install
+npm run dev        # http://localhost:5173, прокси /api на http://localhost:8080
+# против мока вместо бэкенда:
+VITE_API_PROXY_TARGET=http://localhost:4010 npm run dev
+npm run typecheck && npm run lint && npm test
+```
+
 Соглашения, границы модулей и правила ревью — в [`AGENTS.md`](AGENTS.md).
 Незакрытые задачи каркаса ищутся так:
 

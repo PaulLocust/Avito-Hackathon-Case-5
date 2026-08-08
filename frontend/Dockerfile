@@ -12,13 +12,15 @@ WORKDIR /workspace/frontend
 RUN npm ci
 RUN npm run api-types
 
-COPY frontend/index.html frontend/
-COPY frontend/tsconfig.json frontend/tsconfig.json
-COPY frontend/tsconfig.app.json frontend/tsconfig.app.json
-COPY frontend/tsconfig.node.json frontend/tsconfig.node.json
-COPY frontend/vite.config.ts frontend/vite.config.ts
-COPY frontend/eslint.config.js frontend/.prettierrc.json frontend/
-COPY frontend/src frontend/src
+# Источник COPY — относительно корня контекста, назначение — относительно WORKDIR.
+COPY frontend/index.html ./
+COPY frontend/tsconfig.json ./
+COPY frontend/tsconfig.app.json ./
+COPY frontend/tsconfig.node.json ./
+COPY frontend/vite.config.ts ./
+COPY frontend/eslint.config.js ./
+COPY frontend/.prettierrc.json ./
+COPY frontend/src ./src
 
 RUN npm run build
 

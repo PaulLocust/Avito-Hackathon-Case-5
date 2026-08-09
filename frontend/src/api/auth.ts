@@ -1,4 +1,5 @@
 import { apiGet, apiPost } from './client';
+import { refreshAccessToken } from './client';
 import type { AuthResponse, LoginRequest, RegisterRequest, User } from './types';
 
 export function register(body: RegisterRequest): Promise<AuthResponse> {
@@ -11,6 +12,11 @@ export function login(body: LoginRequest): Promise<AuthResponse> {
 
 export function logout(): Promise<void> {
   return apiPost<void>('/auth/logout', undefined);
+}
+
+/** Обновляет JWT доступа; null — если refresh-сессия завершена. */
+export function refresh(): Promise<string | null> {
+  return refreshAccessToken();
 }
 
 export function getCurrentUser(): Promise<User> {

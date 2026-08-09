@@ -32,7 +32,7 @@
 | `too-good-price.json` | Покупатель | demo | 3 | `RISK_TOO_GOOD_PRICE`, `RISK_URGENCY_PRESSURE`, `RISK_PREPAY_OUTSIDE`, `RISK_PHISHING_LINK` | готов, эталон формата |
 | `booking-link.json` | Покупатель | basic | 6 | `RISK_PHISHING_LINK`, `RISK_PREPAY_OUTSIDE`, `RISK_URGENCY_PRESSURE` | к написанию |
 | `courier-card-data.json` | Покупатель | advanced | 8 | `RISK_CARD_DATA_REQUEST`, `RISK_FAKE_SUPPORT`, `RISK_OFF_PLATFORM_CHAT` | к написанию |
-| `payment-screenshot.json` | Продавец | basic | 6 | `RISK_FAKE_PAYMENT_PROOF`, `RISK_SHIP_BEFORE_PAYMENT` | к написанию |
+| `payment-screenshot.json` | Продавец | basic | 6 | `RISK_FAKE_PAYMENT_PROOF`, `RISK_SHIP_BEFORE_PAYMENT` | готов |
 | `payout-link.json` | Продавец | advanced | 8 | `RISK_PAYOUT_LINK`, `RISK_SMS_CODE_REQUEST`, `RISK_DOC_REQUEST` | к написанию |
 
 `RISK_OVERPAYMENT` в наборе к защите не задействован и остаётся в каталоге

@@ -1,0 +1,11 @@
+.git
+.github
+*.md
+.dockerignore
+docker-compose.yml
+.env
+.env.*
+!.env.example
+**/node_modules
+**/dist
+frontend/src/api/schema.ts

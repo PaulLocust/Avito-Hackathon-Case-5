@@ -1,6 +1,6 @@
 package domain
 
-import "strconv"
+import "fmt"
 
 // Валидатор сценариев (модуль M5). Проверяет структуру; содержание
 // (правдоподобность вариантов, тон обратной связи) проверяется на ревью.
@@ -11,204 +11,316 @@ type Issue struct {
 	Message string
 }
 
+// Границы структуры сценария из правил написания контента.
+const (
+	minDialogSteps = 3
+	maxDialogSteps = 8
+)
+
 // ValidateScenario возвращает все найденные нарушения; пустой срез означает,
 // что сценарий пригоден к загрузке. knownSignals — каталог признаков риска.
 //
-// Правила:
-//  1. Обязательные поля заполнены, role и difficulty из перечислений.
-//  2. От 3 до 8 шагов типа dialog, ровно один стартовый, есть терминальный.
-//  3. У шага dialog ровно три варианта: safe, risky, critical.
-//  4. Вес варианта соответствует outcome по таблице Weights.
-//  5. Каждый вариант ведёт на существующий шаг.
-//  6. Все шаги достижимы от стартового, из каждого достижим терминальный.
-//  7. Каждый шаг размечен признаком риска из каталога.
-//  8. У каждого варианта непустой feedback.
+// Проверяются только структурные правила: они одинаковы для любого контента и
+// ловят ошибки, из-за которых прохождение сломалось бы уже на пользователе —
+// висячие ссылки на шаги, недостижимые ветки, неверные веса.
 func ValidateScenario(scenario Scenario, knownSignals map[string]RiskSignal) []Issue {
-	issues := make([]Issue, 0, 4)
+	issues := validateScenarioMeta(scenario)
+	issues = append(issues, validateSteps(scenario, knownSignals)...)
+	issues = append(issues, validateGraph(scenario)...)
 
-	add := func(path, message string) {
-		issues = append(issues, Issue{Path: path, Message: message})
-	}
+	return issues
+}
+
+func validateScenarioMeta(scenario Scenario) []Issue {
+	var issues []Issue
 
 	if scenario.Code == "" {
-		add("code", "код сценария не заполнен")
+		issues = append(issues, Issue{Path: "code", Message: "код сценария обязателен"})
 	}
+
+	if scenario.Title == "" {
+		issues = append(issues, Issue{Path: "title", Message: "название обязательно"})
+	}
+
 	if !scenario.Role.Valid() {
-		add("role", "роль должна быть buyer или seller")
+		issues = append(issues, Issue{
+			Path:    "role",
+			Message: fmt.Sprintf("недопустимая роль %q, ожидается buyer или seller", scenario.Role),
+		})
 	}
+
 	if !scenario.Difficulty.Valid() {
-		add("difficulty", "сложность должна быть basic, advanced или demo")
+		issues = append(issues, Issue{
+			Path:    "difficulty",
+			Message: fmt.Sprintf("недопустимая сложность %q", scenario.Difficulty),
+		})
 	}
 
-	dialogCount := 0
-	startCount := 0
-	terminalCount := 0
-	stepCodes := make(map[string]struct{}, len(scenario.Steps))
-
-	for i, step := range scenario.Steps {
-		path := pathAt("steps", i)
-		stepCodes[step.Code] = struct{}{}
-
-		if step.Code == "" {
-			add(path+".code", "код шага не заполнен")
-		}
-
+	dialogs, terminals, starts := 0, 0, 0
+	for _, step := range scenario.Steps {
 		switch step.Type {
 		case StepTypeDialog:
-			dialogCount++
-			step.addDialogIssues(path, add)
+			dialogs++
 		case StepTypeTerminal:
-			terminalCount++
-			if len(step.Options) > 0 {
-				add(path+".options", "терминальный шаг не должен иметь вариантов")
-			}
-		default:
-			add(path+".type", "тип шага должен быть dialog или terminal")
+			terminals++
 		}
 
 		if step.IsStart {
-			startCount++
-		}
-		if len(step.RiskSignalCodes) == 0 {
-			add(path+".risk_signals", "шаг не размечен признаком риска")
-		}
-		for _, code := range step.RiskSignalCodes {
-			if _, ok := knownSignals[code]; !ok {
-				add(path+".risk_signals", "признак риска "+code+" отсутствует в каталоге")
-			}
+			starts++
 		}
 	}
 
-	if dialogCount < 3 || dialogCount > 8 {
-		add("steps", "должно быть от 3 до 8 шагов диалога")
-	}
-	if startCount != 1 {
-		add("steps", "должен быть ровно один стартовый шаг")
-	}
-	if terminalCount == 0 {
-		add("steps", "должен быть терминальный шаг")
+	if dialogs < minDialogSteps || dialogs > maxDialogSteps {
+		issues = append(issues, Issue{
+			Path:    "steps",
+			Message: fmt.Sprintf("шагов диалога %d, ожидается от %d до %d", dialogs, minDialogSteps, maxDialogSteps),
+		})
 	}
 
-	for i, step := range scenario.Steps {
-		for _, option := range step.Options {
-			path := pathAt("steps", i) + ".options"
-			if option.NextStepCode != "" {
-				if _, ok := stepCodes[option.NextStepCode]; !ok {
-					add(path, "вариант ведёт на несуществующий шаг "+option.NextStepCode)
-				}
-			}
-		}
+	if terminals == 0 {
+		issues = append(issues, Issue{Path: "steps", Message: "нет ни одного терминального шага"})
 	}
 
-	for _, code := range unreachable(scenario) {
-		add("steps", "шаг "+code+" недостижим от стартового или не ведёт к терминальному")
+	if starts != 1 {
+		issues = append(issues, Issue{
+			Path:    "start_step",
+			Message: fmt.Sprintf("стартовых шагов %d, должен быть ровно один", starts),
+		})
 	}
 
 	return issues
 }
 
-func (s Step) addDialogIssues(path string, add func(string, string)) {
-	if s.Type != StepTypeDialog {
-		return
+func validateSteps(scenario Scenario, knownSignals map[string]RiskSignal) []Issue {
+	var issues []Issue
+
+	seen := make(map[string]struct{}, len(scenario.Steps))
+
+	for index, step := range scenario.Steps {
+		path := fmt.Sprintf("steps[%d]", index)
+
+		if step.Code == "" {
+			issues = append(issues, Issue{Path: path + ".code", Message: "код шага обязателен"})
+		}
+
+		if _, duplicate := seen[step.Code]; duplicate {
+			issues = append(issues, Issue{
+				Path:    path + ".code",
+				Message: fmt.Sprintf("код шага %q встречается несколько раз", step.Code),
+			})
+		}
+		seen[step.Code] = struct{}{}
+
+		if !step.Type.Valid() {
+			issues = append(issues, Issue{
+				Path:    path + ".type",
+				Message: fmt.Sprintf("недопустимый тип шага %q", step.Type),
+			})
+		}
+
+		if step.Content.Message == "" {
+			issues = append(issues, Issue{Path: path + ".content.message", Message: "текст шага обязателен"})
+		}
+
+		issues = append(issues, validateStepSignals(step, path, knownSignals)...)
+
+		if step.Type == StepTypeDialog {
+			issues = append(issues, validateOptions(step, path)...)
+		}
 	}
 
-	if len(s.Options) != 3 {
-		add(path+".options", "у шага диалога должно быть ровно три варианта")
-		return
-	}
-
-	outcomes := make(map[Outcome]int, len(s.Options))
-	for i, option := range s.Options {
-		optionPath := pathAt(path+".options", i)
-		outcomes[option.Outcome]++
-		if option.Score != option.Outcome.Score() {
-			add(optionPath+".score", "вес варианта не соответствует последствию")
-		}
-		if option.Feedback == "" {
-			add(optionPath+".feedback", "у варианта нет обратной связи")
-		}
-	}
-
-	for _, outcome := range []Outcome{OutcomeSafe, OutcomeRisky, OutcomeCritical} {
-		if outcomes[outcome] != 1 {
-			add(path+".options", "нужен ровно один вариант с последствием "+string(outcome))
-		}
-	}
+	return issues
 }
 
-// unreachable находит шаги, которые нельзя достичь от стартового, либо из
-// которых не достижим терминальный. Обход в обе стороны по next_step.
-func unreachable(scenario Scenario) []string {
-	byCode := make(map[string]Step, len(scenario.Steps))
-	for _, step := range scenario.Steps {
-		byCode[step.Code] = step
+func validateStepSignals(step Step, path string, knownSignals map[string]RiskSignal) []Issue {
+	var issues []Issue
+
+	if len(step.RiskSignalCodes) == 0 {
+		issues = append(issues, Issue{
+			Path:    path + ".risk_signals",
+			Message: "шаг должен быть размечен хотя бы одним признаком риска",
+		})
 	}
 
-	reachableFromStart := map[string]bool{}
-	var walk func(code string)
-	walk = func(code string) {
-		step, ok := byCode[code]
-		if !ok || reachableFromStart[code] {
-			return
-		}
-		reachableFromStart[code] = true
-		for _, option := range step.Options {
-			if option.NextStepCode != "" {
-				walk(option.NextStepCode)
-			}
+	for signalIndex, code := range step.RiskSignalCodes {
+		if _, ok := knownSignals[code]; !ok {
+			issues = append(issues, Issue{
+				Path:    fmt.Sprintf("%s.risk_signals[%d]", path, signalIndex),
+				Message: fmt.Sprintf("признак %q отсутствует в каталоге", code),
+			})
 		}
 	}
 
-	reachesTerminal := map[string]bool{}
-	var reverse func(code string) bool
-	reverse = func(code string) bool {
-		if v, seen := reachesTerminal[code]; seen {
-			return v
-		}
-		step, ok := byCode[code]
-		if !ok {
-			return false
-		}
-		reachesTerminal[code] = false // защита от циклов
-		for _, option := range step.Options {
-			if option.NextStepCode != "" && reverse(option.NextStepCode) {
-				reachesTerminal[code] = true
-				break
-			}
-		}
-		if step.Type == StepTypeTerminal {
-			reachesTerminal[code] = true
-		}
-		return reachesTerminal[code]
+	return issues
+}
+
+// validateOptions проверяет сетку вариантов: ровно три, по одному на каждое
+// последствие, вес соответствует последствию, обратная связь не пуста.
+func validateOptions(step Step, path string) []Issue {
+	var issues []Issue
+
+	if len(step.Options) != len(Weights) {
+		issues = append(issues, Issue{
+			Path:    path + ".options",
+			Message: fmt.Sprintf("вариантов %d, ожидается ровно %d", len(step.Options), len(Weights)),
+		})
 	}
 
-	var start string
-	for _, step := range scenario.Steps {
-		if step.IsStart {
-			start = step.Code
-		}
-	}
-	if start != "" {
-		walk(start)
-	}
-	for _, step := range scenario.Steps {
-		reverse(step.Code)
-	}
+	byOutcome := make(map[Outcome]int, len(Weights))
 
-	bad := make([]string, 0)
-	for _, step := range scenario.Steps {
-		if step.Code == "" {
+	for optionIndex, option := range step.Options {
+		optionPath := fmt.Sprintf("%s.options[%d]", path, optionIndex)
+
+		if !option.Outcome.Valid() {
+			issues = append(issues, Issue{
+				Path:    optionPath + ".outcome",
+				Message: fmt.Sprintf("недопустимое последствие %q", option.Outcome),
+			})
+
 			continue
 		}
-		if !reachableFromStart[step.Code] || !reachesTerminal[step.Code] {
-			bad = append(bad, step.Code)
+
+		byOutcome[option.Outcome]++
+
+		if option.Score != option.Outcome.Score() {
+			issues = append(issues, Issue{
+				Path: optionPath + ".score",
+				Message: fmt.Sprintf("вес %d не соответствует последствию %q, ожидается %d",
+					option.Score, option.Outcome, option.Outcome.Score()),
+			})
+		}
+
+		if option.Text == "" {
+			issues = append(issues, Issue{Path: optionPath + ".text", Message: "текст варианта обязателен"})
+		}
+
+		if option.Feedback == "" {
+			issues = append(issues, Issue{Path: optionPath + ".feedback", Message: "обратная связь обязательна"})
 		}
 	}
 
-	return bad
+	for outcome := range Weights {
+		if byOutcome[outcome] != 1 {
+			issues = append(issues, Issue{
+				Path: path + ".options",
+				Message: fmt.Sprintf("вариантов с последствием %q — %d, должен быть ровно один",
+					outcome, byOutcome[outcome]),
+			})
+		}
+	}
+
+	return issues
 }
 
-// pathAt собирает путь в отчёте в стиле steps[2].options[0].
-func pathAt(prefix string, index int) string {
-	return prefix + "[" + strconv.Itoa(index) + "]"
+// validateGraph проверяет связность: ссылки ведут на существующие шаги, все
+// шаги достижимы от стартового и из каждого достижим терминальный.
+func validateGraph(scenario Scenario) []Issue {
+	var issues []Issue
+
+	steps := make(map[string]Step, len(scenario.Steps))
+	for _, step := range scenario.Steps {
+		steps[step.Code] = step
+	}
+
+	for index, step := range scenario.Steps {
+		for optionIndex, option := range step.Options {
+			if option.NextStepCode == "" {
+				issues = append(issues, Issue{
+					Path:    fmt.Sprintf("steps[%d].options[%d].next_step", index, optionIndex),
+					Message: "не указан следующий шаг",
+				})
+
+				continue
+			}
+
+			if _, ok := steps[option.NextStepCode]; !ok {
+				issues = append(issues, Issue{
+					Path:    fmt.Sprintf("steps[%d].options[%d].next_step", index, optionIndex),
+					Message: fmt.Sprintf("шаг %q не найден в сценарии", option.NextStepCode),
+				})
+			}
+		}
+	}
+
+	start, ok := scenario.StartStep()
+	if !ok {
+		return issues
+	}
+
+	reachable := reachableFrom(start.Code, steps)
+
+	for index, step := range scenario.Steps {
+		if _, ok := reachable[step.Code]; !ok {
+			issues = append(issues, Issue{
+				Path:    fmt.Sprintf("steps[%d]", index),
+				Message: fmt.Sprintf("шаг %q недостижим от стартового", step.Code),
+			})
+
+			continue
+		}
+
+		if !leadsToTerminal(step.Code, steps) {
+			issues = append(issues, Issue{
+				Path:    fmt.Sprintf("steps[%d]", index),
+				Message: fmt.Sprintf("из шага %q не достижим терминальный шаг", step.Code),
+			})
+		}
+	}
+
+	return issues
+}
+
+func reachableFrom(start string, steps map[string]Step) map[string]struct{} {
+	reachable := make(map[string]struct{}, len(steps))
+	queue := []string{start}
+
+	for len(queue) > 0 {
+		code := queue[0]
+		queue = queue[1:]
+
+		if _, visited := reachable[code]; visited {
+			continue
+		}
+
+		reachable[code] = struct{}{}
+
+		for _, option := range steps[code].Options {
+			if _, ok := steps[option.NextStepCode]; ok {
+				queue = append(queue, option.NextStepCode)
+			}
+		}
+	}
+
+	return reachable
+}
+
+func leadsToTerminal(from string, steps map[string]Step) bool {
+	visited := make(map[string]struct{}, len(steps))
+	queue := []string{from}
+
+	for len(queue) > 0 {
+		code := queue[0]
+		queue = queue[1:]
+
+		if _, seen := visited[code]; seen {
+			continue
+		}
+
+		visited[code] = struct{}{}
+
+		step, ok := steps[code]
+		if !ok {
+			continue
+		}
+
+		if step.Type == StepTypeTerminal {
+			return true
+		}
+
+		for _, option := range step.Options {
+			queue = append(queue, option.NextStepCode)
+		}
+	}
+
+	return false
 }

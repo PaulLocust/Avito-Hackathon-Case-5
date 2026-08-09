@@ -54,6 +54,7 @@ func knownSignals() map[string]domain.RiskSignal {
 }
 
 func TestValidateScenario(t *testing.T) {
+
 	tests := []struct {
 		name    string
 		mutate  func(*domain.Scenario)

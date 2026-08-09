@@ -63,16 +63,18 @@ services:
     command: ["/bin/sh", "-c", "/app/seeder && exec /app/api"]
     restart: unless-stopped
 
-  # M6 включает сервис, когда во frontend/ появится Dockerfile.
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #   container_name: antiscam-frontend
-  #   ports:
-  #     - "${FRONTEND_PORT:-3000}:80"
-  #   depends_on:
-  #     - backend
-  #   restart: unless-stopped
+  # Интерфейс (M6). Контекст — корень репозитория: сборке нужен api/openapi.yaml
+  # для генерации типов.
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: antiscam-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
 
 volumes:
   postgres-data:

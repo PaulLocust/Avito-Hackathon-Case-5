@@ -6,6 +6,7 @@ import { getSessionResult } from '../../api/sessions';
 import { ApiError } from '../../entities/apiError';
 import { formatDuration } from '../../entities/format';
 import { roleLabel } from '../../entities/labels';
+import { useAuth } from '../../features/auth/useAuth';
 import { ErrorState } from '../../shared/components/ErrorState';
 import { LoadingState } from '../../shared/components/LoadingState';
 import { NextStepCard } from '../../shared/components/NextStepCard';
@@ -17,6 +18,7 @@ import { SignalMap } from './SignalMap';
 
 export function ResultPage() {
   const { sessionId = '' } = useParams();
+  const { user } = useAuth();
 
   const resultQuery = useQuery({
     queryKey: ['session-result', sessionId],
@@ -69,7 +71,8 @@ export function ResultPage() {
 
       <NextStepCard suggestion={result.next_step} />
 
-      <AttemptHistory scenarioCode={result.scenario.code} />
+      {/* История попыток живёт на аккаунте (requireAuth): гостю её не отдаём. */}
+      {user ? <AttemptHistory scenarioCode={result.scenario.code} /> : null}
     </Space>
   );
 }

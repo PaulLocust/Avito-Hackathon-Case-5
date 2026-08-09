@@ -1,7 +1,6 @@
 import { Suspense, lazy } from 'react';
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
 
-import { ProtectedRoute } from './features/auth/ProtectedRoute';
 import { AppLayout } from './shared/components/AppLayout';
 import { LoadingState } from './shared/components/LoadingState';
 
@@ -39,22 +38,8 @@ export function App() {
             <Route path="/signals/:code" element={<SignalDetailPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
-            <Route
-              path="/session/:sessionId"
-              element={
-                <ProtectedRoute>
-                  <SessionPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/session/:sessionId/result"
-              element={
-                <ProtectedRoute>
-                  <ResultPage />
-                </ProtectedRoute>
-              }
-            />
+            <Route path="/session/:sessionId" element={<SessionPage />} />
+            <Route path="/session/:sessionId/result" element={<ResultPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>
         </Routes>

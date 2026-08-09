@@ -147,6 +147,25 @@ describe('автообновление при 401', () => {
     expect(refreshCalls).toHaveBeenCalledTimes(1);
   });
 
+  it('не уводит гостя на /login при 401', async () => {
+    // У гостя токена нет: 401 на защищённом эндпоинте — обычная ошибка,
+    // а не потерянная сессия. Уводить такого на вход нельзя.
+    client.defaults.adapter = makeAdapter((req, config) => {
+      if (req.url === '/auth/refresh') return unauthorizedError(config);
+      return unauthorizedError(config);
+    });
+    const assign = vi.fn();
+    (globalThis as Record<string, unknown>).window = {
+      location: { pathname: '/', assign },
+    };
+
+    await expect(apiGet('/scenarios/too-good-price/attempts')).rejects.toMatchObject({
+      code: 'unauthorized',
+    });
+
+    expect(assign).not.toHaveBeenCalled();
+  });
+
   it('при неудачном refresh очищает токен и уводит на /login', async () => {
     storeToken('expired-token');
     client.defaults.adapter = makeAdapter((req, config) => {

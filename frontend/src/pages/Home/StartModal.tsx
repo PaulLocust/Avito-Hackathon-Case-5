@@ -1,13 +1,12 @@
 import { Alert, Button, Modal, Space, Spin, Tag, Typography } from 'antd';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 
 import { getScenario } from '../../api/scenarios';
 import { startSession } from '../../api/sessions';
 import type { ScenarioDetail } from '../../api/types';
 import { ApiError } from '../../entities/apiError';
-import { useAuth } from '../../features/auth/useAuth';
 import { DifficultyTag } from '../../shared/components/DifficultyTag';
 import { roleLabel } from '../../entities/labels';
 
@@ -21,9 +20,7 @@ type View = 'confirm' | 'continue';
 
 /** Экран подтверждения старта: модальное окно на главной (USR1). */
 export function StartModal({ open, scenarioCode, onClose }: StartModalProps) {
-  const { user } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
 
   const [view, setView] = useState<View>('confirm');
   const [continueSessionId, setContinueSessionId] = useState<string | null>(null);
@@ -73,11 +70,6 @@ export function StartModal({ open, scenarioCode, onClose }: StartModalProps) {
   });
 
   const handleStart = (restart: boolean) => {
-    if (!user) {
-      onClose();
-      navigate('/login', { state: { from: location.pathname } });
-      return;
-    }
     setStartError(null);
     start.mutate(restart);
   };

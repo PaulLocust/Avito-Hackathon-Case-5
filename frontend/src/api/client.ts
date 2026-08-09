@@ -82,6 +82,9 @@ client.interceptors.response.use(
 
     const isAuthFlow = AUTH_FLOW_PATHS.some((re) => re.test(url));
     const isRefresh = url === REFRESH_PATH;
+    // Было ли что обновлять: у гостя токена нет, и его 401 (например, на
+    // защищённом /attempts) не должен гнать на страницу входа.
+    const hadToken = getStoredToken() != null;
 
     // Флаг _retry едет в config сквозь mergeConfig: повторный 401 после
     // успешного refresh не уходит на новый ретрай, чтобы не зациклиться.
@@ -100,7 +103,7 @@ client.interceptors.response.use(
         config!.headers.set('Authorization', `Bearer ${token}`);
         return client.request(config!);
       }
-      if (window.location.pathname !== '/login') {
+      if (hadToken && window.location.pathname !== '/login') {
         window.location.assign('/login');
       }
     }

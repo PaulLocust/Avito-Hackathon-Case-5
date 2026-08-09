@@ -16,7 +16,9 @@
         "message": "Добрый день, это курьер по вашему заказу. В приложении доставка зависла, выехать не могу. Давайте спишемся в мессенджере, там всё решим — напишите мне в WhatsApp, это быстро.",
         "context": "Сообщение пришло в чате платформы от пользователя без отметки курьера."
       },
-      "risk_signals": ["RISK_OFF_PLATFORM_CHAT"],
+      "risk_signals": [
+        "RISK_OFF_PLATFORM_CHAT"
+      ],
       "options": [
         {
           "code": "a",
@@ -52,7 +54,10 @@
         "message": "Это оператор поддержки сервиса доставки. Ваш заказ заблокирован из-за сбоя оплаты. Чтобы разблокировать и оформить возврат, нужно подтвердить карту, с которой была оплата.",
         "context": "Сообщение пришло из того же мессенджера, куда звал «курьер», с аватаром поддержки платформы."
       },
-      "risk_signals": ["RISK_FAKE_SUPPORT", "RISK_OFF_PLATFORM_CHAT"],
+      "risk_signals": [
+        "RISK_FAKE_SUPPORT",
+        "RISK_OFF_PLATFORM_CHAT"
+      ],
       "options": [
         {
           "code": "a",
@@ -88,7 +93,10 @@
         "message": "Для подтверждения пришлите номер карты, с которой оплачивали. Это займёт минуту, после разблокировки данные будут удалены.",
         "context": "«Оператор» торопит и обещает, что данные карты не сохранятся."
       },
-      "risk_signals": ["RISK_CARD_DATA_REQUEST", "RISK_FAKE_SUPPORT"],
+      "risk_signals": [
+        "RISK_CARD_DATA_REQUEST",
+        "RISK_FAKE_SUPPORT"
+      ],
       "options": [
         {
           "code": "a",
@@ -112,7 +120,7 @@
           "outcome": "safe",
           "score": 10,
           "feedback": "Отказ от передачи реквизитов в мессенджер закрывает схему. Реальный статус заказа и оплаты виден в приложении платформы, и данные карты для него не нужны.",
-          "next_step": "s4"
+          "next_step": "s5"
         }
       ]
     },
@@ -124,7 +132,9 @@
         "message": "Нам нужно больше данных: срок действия карты и три цифры с оборота. Без них банк не подтвердит возврат.",
         "context": "«Оператор» продолжает настаивать, ссылаясь на требования банка."
       },
-      "risk_signals": ["RISK_CARD_DATA_REQUEST"],
+      "risk_signals": [
+        "RISK_CARD_DATA_REQUEST"
+      ],
       "options": [
         {
           "code": "a",
@@ -163,7 +173,10 @@
           "caption": "dostavka-podtverzhdenie.ru/refund/77812"
         }
       },
-      "risk_signals": ["RISK_FAKE_SUPPORT", "RISK_OFF_PLATFORM_CHAT"],
+      "risk_signals": [
+        "RISK_FAKE_SUPPORT",
+        "RISK_OFF_PLATFORM_CHAT"
+      ],
       "options": [
         {
           "code": "a",
@@ -187,7 +200,7 @@
           "outcome": "safe",
           "score": 10,
           "feedback": "Возврат, если он действительно начат, отражается в банке без всяких страниц из переписки. Проверка там закрывает вопрос, а ссылка остаётся неоткрытой.",
-          "next_step": "s6"
+          "next_step": "s7"
         }
       ]
     },
@@ -199,7 +212,10 @@
         "message": "Если не подтвердите сейчас, заказ вернётся отправителю, а деньги аннулируются. Я больше не смогу помочь.",
         "context": "«Оператор» переходит к угрозам и срокам."
       },
-      "risk_signals": ["RISK_FAKE_SUPPORT", "RISK_OFF_PLATFORM_CHAT"],
+      "risk_signals": [
+        "RISK_FAKE_SUPPORT",
+        "RISK_OFF_PLATFORM_CHAT"
+      ],
       "options": [
         {
           "code": "a",
@@ -235,7 +251,10 @@
         "message": "Продиктуйте код из SMS — это подтверждение, что вы согласны на возврат. Без него операцию не провести.",
         "context": "«Оператор» присылает скриншот «страницы подтверждения», где просят код."
       },
-      "risk_signals": ["RISK_CARD_DATA_REQUEST", "RISK_FAKE_SUPPORT"],
+      "risk_signals": [
+        "RISK_CARD_DATA_REQUEST",
+        "RISK_FAKE_SUPPORT"
+      ],
       "options": [
         {
           "code": "a",
@@ -259,7 +278,7 @@
           "outcome": "safe",
           "score": 10,
           "feedback": "Отказ от кода обрывает схему, а приложение банка показывает, была ли вообще какая-то операция. Сообщение с кодом — сигнал, что кто-то пытается действовать от вашего имени.",
-          "next_step": "s8"
+          "next_step": "end"
         }
       ]
     },
@@ -271,7 +290,10 @@
         "message": "«Курьер» пишет снова: «Вы уже подтвердили? Иначе заказ отменят». Но в приложении ваш заказ спокойно ждёт выдачи, никаких блокировок нет.",
         "context": "В приложении платформы заказ в статусе «ожидает выдачи»."
       },
-      "risk_signals": ["RISK_FAKE_SUPPORT", "RISK_OFF_PLATFORM_CHAT"],
+      "risk_signals": [
+        "RISK_FAKE_SUPPORT",
+        "RISK_OFF_PLATFORM_CHAT"
+      ],
       "options": [
         {
           "code": "a",
@@ -306,7 +328,9 @@
         "sender": "narrator",
         "message": "Разговор окончен. В сценарии были увод в сторонний мессенджер, поддельная поддержка и запрос данных карты."
       },
-      "risk_signals": ["RISK_CARD_DATA_REQUEST"]
+      "risk_signals": [
+        "RISK_CARD_DATA_REQUEST"
+      ]
     }
   ]
 }

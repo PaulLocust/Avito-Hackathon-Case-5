@@ -16,7 +16,9 @@
         "message": "Здравствуйте! Ноутбук в отличном состоянии, цена окончательная. Желающих много — чтобы забрать именно вы, предлагаю оформить бронь. Пока вы думаете, его могут выкупить.",
         "context": "Продавец не отвечает на вопросы о состоянии и торопит с решением."
       },
-      "risk_signals": ["RISK_URGENCY_PRESSURE"],
+      "risk_signals": [
+        "RISK_URGENCY_PRESSURE"
+      ],
       "options": [
         {
           "code": "a",
@@ -52,7 +54,10 @@
         "message": "Бронь — 15% от цены. Просто переведите на карту, я сниму объявление и сразу придержу ноутбук. Через доставку долго, а бронь займёт пять минут.",
         "context": "Продавец прислал номер карты на имя другого человека."
       },
-      "risk_signals": ["RISK_PREPAY_OUTSIDE", "RISK_URGENCY_PRESSURE"],
+      "risk_signals": [
+        "RISK_PREPAY_OUTSIDE",
+        "RISK_URGENCY_PRESSURE"
+      ],
       "options": [
         {
           "code": "a",
@@ -91,7 +96,10 @@
           "caption": "avito-dostavka-pay.ru/order/88213"
         }
       },
-      "risk_signals": ["RISK_PHISHING_LINK", "RISK_URGENCY_PRESSURE"],
+      "risk_signals": [
+        "RISK_PHISHING_LINK",
+        "RISK_URGENCY_PRESSURE"
+      ],
       "options": [
         {
           "code": "a",
@@ -127,7 +135,9 @@
         "message": "По ссылке открывается страница «Оплата брони»: форма просит номер карты, срок действия и код с оборота. В адресной строке — avito-dostavka-pay.ru, и сайт требует авторизоваться через SMS-код.",
         "context": "Страница выглядит как официальная, но домен не принадлежит платформе."
       },
-      "risk_signals": ["RISK_PHISHING_LINK"],
+      "risk_signals": [
+        "RISK_PHISHING_LINK"
+      ],
       "options": [
         {
           "code": "a",
@@ -151,7 +161,7 @@
           "outcome": "safe",
           "score": 10,
           "feedback": "Закрытие страницы обрывает схему: реальную бронь и статус доставки можно увидеть только в приложении платформы. Ссылка из переписки для этого не нужна — это уже ответ.",
-          "next_step": "s5"
+          "next_step": "s6"
         }
       ]
     },
@@ -163,7 +173,10 @@
         "message": "Вы ещё думаете? Второй покупатель уже переводит деньги за этот ноутбук. Решайте прямо сейчас, иначе я отдам его ему.",
         "context": "После отказа от ссылки продавец снова торопит."
       },
-      "risk_signals": ["RISK_URGENCY_PRESSURE", "RISK_PREPAY_OUTSIDE"],
+      "risk_signals": [
+        "RISK_URGENCY_PRESSURE",
+        "RISK_PREPAY_OUTSIDE"
+      ],
       "options": [
         {
           "code": "a",
@@ -187,7 +200,7 @@
           "outcome": "safe",
           "score": 10,
           "feedback": "Твёрдый возврат к проверяемому пути — доставке через платформу — оставляет мошеннику единственный выход: отказаться. Добросовестного продавца это устроит.",
-          "next_step": "s6"
+          "next_step": "end"
         }
       ]
     },
@@ -199,7 +212,10 @@
         "message": "Последний раз предлагаю: переведите 3000 ₽ на карту прямо сейчас — и ноутбук ваш. Если нет — отдам другому покупателю сегодня вечером.",
         "context": "Продавец снова прислал номер карты и требует решения немедленно."
       },
-      "risk_signals": ["RISK_PREPAY_OUTSIDE", "RISK_URGENCY_PRESSURE"],
+      "risk_signals": [
+        "RISK_PREPAY_OUTSIDE",
+        "RISK_URGENCY_PRESSURE"
+      ],
       "options": [
         {
           "code": "a",
@@ -234,7 +250,9 @@
         "sender": "narrator",
         "message": "Разговор окончен. Разберём, где были признаки риска: искусственная срочность, предоплата вне платформы и фишинговая ссылка."
       },
-      "risk_signals": ["RISK_PHISHING_LINK"]
+      "risk_signals": [
+        "RISK_PHISHING_LINK"
+      ]
     }
   ]
 }

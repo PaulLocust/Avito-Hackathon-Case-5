@@ -120,15 +120,125 @@ func (r *scenarioRepository) CountActive(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// TODO(M5): в одной транзакции — при совпадении content_hash ничего не
-// менять, иначе снять is_active со старой версии и записать новую.
+// Upsert создаёт или обновляет версию сценария (M5). Версия присваивается по
+// хешу содержимого: при совпадении хеша активная версия не меняется и
+// возвращается (version, false, nil); при изменении старая активная версия
+// деактивируется, а новая получает следующий номер (FR32). Сессии, начатые на
+// прежней версии, продолжают на ней жить.
 func (r *scenarioRepository) Upsert(
 	ctx context.Context,
 	scenario domain.Scenario,
 	contentHash string,
 ) (int, bool, error) {
-	_, _, _ = ctx, scenario, contentHash
-	return 0, false, domain.ErrNotImplemented
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, false, fmt.Errorf("транзакция загрузки сценария %s: %w", scenario.Code, err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // в конце пути выполняется Commit
+
+	activeVersion, activeHash, err := r.activeVersion(ctx, tx, scenario.Code)
+	if err != nil {
+		return 0, false, err
+	}
+	if activeHash == contentHash {
+		return activeVersion, false, nil
+	}
+
+	newVersion := activeVersion + 1
+	if activeVersion > 0 {
+		_, err = tx.Exec(ctx, `UPDATE scenarios SET is_active = FALSE WHERE code = $1 AND is_active`, scenario.Code)
+		if err != nil {
+			return 0, false, fmt.Errorf("деактивация прежней версии %s: %w", scenario.Code, err)
+		}
+	}
+
+	var scenarioID int64
+	err = tx.QueryRow(ctx, `
+		INSERT INTO scenarios
+			(code, version, role, title, description, intro, difficulty, steps_count, estimated_minutes, content_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING id`,
+		scenario.Code, newVersion, scenario.Role, scenario.Title, scenario.Description,
+		scenario.Intro, scenario.Difficulty, scenario.StepsCount, scenario.EstimatedMinutes, contentHash,
+	).Scan(&scenarioID)
+	if err != nil {
+		return 0, false, fmt.Errorf("вставка сценария %s v%d: %w", scenario.Code, newVersion, err)
+	}
+
+	if err := r.insertSteps(ctx, tx, scenarioID, scenario.Steps); err != nil {
+		return 0, false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, false, fmt.Errorf("фиксация сценария %s: %w", scenario.Code, err)
+	}
+
+	return newVersion, true, nil
+}
+
+// activeVersion возвращает номер активной версии и её хеш; пустая активная
+// версия означает первый запуск загрузки.
+func (r *scenarioRepository) activeVersion(
+	ctx context.Context,
+	tx pgx.Tx,
+	code string,
+) (int, string, error) {
+	var version int
+	var hash string
+
+	err := tx.QueryRow(
+		ctx,
+		`SELECT version, content_hash FROM scenarios WHERE code = $1 AND is_active`,
+		code,
+	).Scan(&version, &hash)
+	if err == nil {
+		return version, hash, nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, "", nil
+	}
+
+	return 0, "", fmt.Errorf("чтение активной версии сценария %s: %w", code, err)
+}
+
+// insertSteps записывает шаги и их варианты. Контент шага — JSONB: структура
+// контента может меняться без миграции схемы.
+func (r *scenarioRepository) insertSteps(
+	ctx context.Context,
+	tx pgx.Tx,
+	scenarioID int64,
+	steps []domain.Step,
+) error {
+	for position, step := range steps {
+		content, err := json.Marshal(step.Content)
+		if err != nil {
+			return fmt.Errorf("сериализация контента шага %s: %w", step.Code, err)
+		}
+
+		var stepID int64
+		err = tx.QueryRow(ctx, `
+			INSERT INTO steps (scenario_id, code, type, position, content, risk_signal_codes, is_start)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			RETURNING id`,
+			scenarioID, step.Code, step.Type, position, content, step.RiskSignalCodes, step.IsStart,
+		).Scan(&stepID)
+		if err != nil {
+			return fmt.Errorf("вставка шага %s: %w", step.Code, err)
+		}
+
+		for optionPosition, option := range step.Options {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO options (step_id, code, text, outcome, score, feedback, next_step_code, position)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+				stepID, option.Code, option.Text, option.Outcome, option.Score,
+				option.Feedback, option.NextStepCode, optionPosition,
+			); err != nil {
+				return fmt.Errorf("вставка варианта %s/%s: %w", step.Code, option.Code, err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // loadScenario читает сценарий с шагами и вариантами; отсутствие строки —

@@ -134,8 +134,37 @@ func (r *riskSignalRepository) ListByCodes(ctx context.Context, codes []string) 
 	return ordered, nil
 }
 
-// TODO(M5): INSERT ... ON CONFLICT (code) DO UPDATE.
+// Upsert перезаписывает справочник признаков риска (M5). Каталог — общий
+// словарь контента: повторный запуск сидера идемпотентен.
 func (r *riskSignalRepository) Upsert(ctx context.Context, signals []domain.RiskSignal) error {
-	_, _ = ctx, signals
-	return domain.ErrNotImplemented
+	const query = `
+		INSERT INTO risk_signals (code, side, title, summary, description, how_to_recognize, how_to_act)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (code) DO UPDATE SET
+			side = EXCLUDED.side,
+			title = EXCLUDED.title,
+			summary = EXCLUDED.summary,
+			description = EXCLUDED.description,
+			how_to_recognize = EXCLUDED.how_to_recognize,
+			how_to_act = EXCLUDED.how_to_act`
+
+	batch := &pgx.Batch{}
+	for _, signal := range signals {
+		batch.Queue(
+			query,
+			signal.Code, signal.Side, signal.Title, signal.Summary,
+			signal.Description, signal.HowToRecognize, signal.HowToAct,
+		)
+	}
+
+	results := r.pool.SendBatch(ctx, batch)
+	defer results.Close()
+
+	for range signals {
+		if _, err := results.Exec(); err != nil {
+			return fmt.Errorf("сохранение признака риска: %w", err)
+		}
+	}
+
+	return nil
 }

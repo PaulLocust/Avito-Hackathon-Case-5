@@ -44,7 +44,11 @@ type Session struct {
 	FinishedAt      *time.Time
 }
 
-func (s Session) Active() bool { return s.Status == StatusInProgress }
+// Active — сессию можно продолжить: она идёт или стоит на паузе. Пауза
+// сохраняет текущий шаг, поэтому снапшот отдаёт его так же, как для идущей.
+func (s Session) Active() bool {
+	return s.Status == StatusInProgress || s.Status == StatusPaused
+}
 
 // Answer — зафиксированный выбор.
 type Answer struct {

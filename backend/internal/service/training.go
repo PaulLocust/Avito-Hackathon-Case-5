@@ -141,7 +141,7 @@ func (s *trainingService) SubmitAnswer(
 		return domain.AnswerOutcome{}, fmt.Errorf("поиск ответа сессии %s: %w", session.ID, getErr)
 	}
 
-	if session.Status != domain.StatusInProgress {
+	if !session.Active() {
 		return domain.AnswerOutcome{}, domain.ErrSessionFinished
 	}
 
@@ -242,6 +242,8 @@ func (s *trainingService) Abandon(ctx context.Context, owner domain.Owner, sessi
 		return nil
 	case domain.StatusInProgress:
 		return s.sessions.Abandon(ctx, sessionID)
+	case domain.StatusAbandoned:
+		return domain.ErrSessionFinished
 	}
 
 	return domain.ErrSessionFinished

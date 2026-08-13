@@ -10,12 +10,14 @@ import { SessionPage } from './SessionPage';
 vi.mock('../../api/sessions', () => ({
   getSession: vi.fn(),
   submitAnswer: vi.fn(),
+  abandonSession: vi.fn(),
 }));
 
-import { getSession, submitAnswer } from '../../api/sessions';
+import { abandonSession, getSession, submitAnswer } from '../../api/sessions';
 
 const getSessionMock = vi.mocked(getSession);
 const submitAnswerMock = vi.mocked(submitAnswer);
+const abandonSessionMock = vi.mocked(abandonSession);
 
 const baseSession: SessionState = {
   id: 'sess-1',
@@ -146,8 +148,10 @@ describe('SessionPage', () => {
     expect(await screen.findByText('Экран результата')).toBeInTheDocument();
   });
 
-  it('«Прервать тренировку» уводит на главную, не завершая сессию', async () => {
+  it('«Прервать тренировку» ставит сессию на паузу и уводит на главную', async () => {
     submitAnswerMock.mockClear();
+    abandonSessionMock.mockClear();
+    abandonSessionMock.mockResolvedValue(undefined);
     renderSessionPage(baseSession);
 
     await screen.findByText('Бронь по ссылке');
@@ -158,7 +162,27 @@ describe('SessionPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /^Прервать$/ }));
 
     expect(await screen.findByText('Главная')).toBeInTheDocument();
+    // Пауза, а не завершение: ответ не отправляется, сессия помечается
+    // paused и остаётся доступной для продолжения.
     expect(submitAnswerMock).not.toHaveBeenCalled();
-    expect(getSessionMock).toHaveBeenCalledTimes(1);
+    expect(abandonSessionMock).toHaveBeenCalledWith('sess-1');
+  });
+
+  it('сорванный запрос паузы всё равно уводит на главную', async () => {
+    abandonSessionMock.mockClear();
+    abandonSessionMock.mockRejectedValue(new Error('сеть недоступна'));
+    renderSessionPage(baseSession);
+
+    await screen.findByText('Бронь по ссылке');
+    await userEvent.click(screen.getByRole('button', { name: /Прервать тренировку/ }));
+    await screen.findAllByText('Прервать тренировку?');
+
+    // Модалка предыдущего теста остаётся в document.body, поэтому берём
+    // кнопку последнего открытого окна.
+    const confirmButtons = screen.getAllByRole('button', { name: /^Прервать$/ });
+    await userEvent.click(confirmButtons[confirmButtons.length - 1]);
+
+    // Сессия останется in_progress — её всё равно предложат продолжить.
+    expect(await screen.findByText('Главная')).toBeInTheDocument();
   });
 });

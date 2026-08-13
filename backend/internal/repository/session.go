@@ -113,11 +113,11 @@ func (r *sessionRepository) CreateReplacingActive(ctx context.Context, session d
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx,
+	if _, execErr := tx.Exec(ctx,
 		"UPDATE sessions SET status = 'abandoned', finished_at = now()"+
-			" WHERE "+condition+" AND scenario_code = $1 AND status = 'in_progress'",
-		session.ScenarioCode, ownerID); err != nil {
-		return domain.Session{}, fmt.Errorf("прерывание активной сессии перед перезапуском: %w", err)
+			" WHERE "+condition+" AND scenario_code = $1 AND status IN ('in_progress', 'paused')",
+		session.ScenarioCode, ownerID); execErr != nil {
+		return domain.Session{}, fmt.Errorf("прерывание активной сессии перед перезапуском: %w", execErr)
 	}
 
 	created, err := scanSession(tx.QueryRow(ctx, `
@@ -160,7 +160,7 @@ func (r *sessionRepository) GetActiveByOwner(ctx context.Context, owner domain.O
 	condition, ownerID := ownerWhere(owner, 1)
 
 	session, err := scanSession(r.pool.QueryRow(ctx,
-		"SELECT "+sessionColumns+" FROM sessions WHERE "+condition+" AND status = 'in_progress'"+
+		"SELECT "+sessionColumns+" FROM sessions WHERE "+condition+" AND status IN ('in_progress', 'paused')"+
 			" ORDER BY started_at DESC LIMIT 1",
 		ownerID))
 	if err != nil {
@@ -183,7 +183,7 @@ func (r *sessionRepository) GetActiveByOwnerScenario(
 
 	session, err := scanSession(r.pool.QueryRow(ctx,
 		"SELECT "+sessionColumns+
-			" FROM sessions WHERE "+condition+" AND scenario_code = $1 AND status = 'in_progress'"+
+			" FROM sessions WHERE "+condition+" AND scenario_code = $1 AND status IN ('in_progress', 'paused')"+
 			" ORDER BY started_at DESC LIMIT 1",
 		scenarioCode, ownerID))
 	if err != nil {
@@ -222,7 +222,8 @@ func (r *sessionRepository) SaveAnswer(
 		return domain.Session{}, fmt.Errorf("чтение сессии %s под блокировкой: %w", answer.SessionID, err)
 	}
 
-	if session.Status != domain.StatusInProgress {
+	// Ответ на паузе допустим: он же снимает сессию с паузы (см. UPDATE ниже).
+	if !session.Active() {
 		return domain.Session{}, domain.ErrSessionFinished
 	}
 	if session.CurrentStepCode != answer.StepCode {
@@ -232,11 +233,11 @@ func (r *sessionRepository) SaveAnswer(
 	// Позиция считается авторитетно внутри транзакции: расчёт в сервисе
 	// через len(answers)+1 при параллельных отправках дал бы одинаковые
 	// позиции у разных ответов.
-	if err := tx.QueryRow(ctx, `
+	if posErr := tx.QueryRow(ctx, `
 		SELECT COALESCE(MAX(position), 0) + 1
 		FROM answers
-		WHERE session_id = $1`, answer.SessionID).Scan(&answer.Position); err != nil {
-		return domain.Session{}, fmt.Errorf("расчёт позиции ответа: %w", err)
+		WHERE session_id = $1`, answer.SessionID).Scan(&answer.Position); posErr != nil {
+		return domain.Session{}, fmt.Errorf("расчёт позиции ответа: %w", posErr)
 	}
 
 	insert := `
@@ -264,7 +265,7 @@ func (r *sessionRepository) SaveAnswer(
 	} else {
 		if _, execErr := tx.Exec(ctx, `
 			UPDATE sessions
-			SET score = score + $1, current_step_code = $3
+			SET score = score + $1, current_step_code = $3, status = 'in_progress'
 			WHERE id = $2`,
 			answer.ScoreDelta, answer.SessionID, nextStepCode,
 		); execErr != nil {
@@ -353,9 +354,11 @@ func (r *sessionRepository) ListAnswers(ctx context.Context, sessionID uuid.UUID
 }
 
 func (r *sessionRepository) Abandon(ctx context.Context, id uuid.UUID) error {
+	// Пауза не проставляет finished_at: сессия не завершена, её продолжают
+	// с того же шага.
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE sessions
-		SET status = 'paused', finished_at = now()
+		SET status = 'paused'
 		WHERE id = $1 AND status = 'in_progress'`, id)
 	if err != nil {
 		return fmt.Errorf("прерывание сессии %s: %w", id, err)
@@ -446,11 +449,11 @@ func (r *sessionRepository) ClaimByGuest(ctx context.Context, guestSessionID, us
 	if _, err := tx.Exec(ctx, `
 		UPDATE sessions s
 		SET status = 'abandoned', finished_at = now()
-		WHERE s.guest_session_id = $1 AND s.status = 'in_progress'
+		WHERE s.guest_session_id = $1 AND s.status IN ('in_progress', 'paused')
 		  AND EXISTS (
 		      SELECT 1 FROM sessions u
 		      WHERE u.user_id = $2 AND u.scenario_code = s.scenario_code
-		        AND u.status = 'in_progress')`,
+		        AND u.status IN ('in_progress', 'paused'))`,
 		guestSessionID, userID); err != nil {
 		return fmt.Errorf("прерывание конфликтующих сессий гостя %s: %w", guestSessionID, err)
 	}

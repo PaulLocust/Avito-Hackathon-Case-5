@@ -131,7 +131,7 @@ func (f *fakeSessionRepo) Create(ctx context.Context, session domain.Session) (d
 	for _, existing := range f.sessions {
 		if existing.Owner == session.Owner &&
 			existing.ScenarioCode == session.ScenarioCode &&
-			existing.Status == domain.StatusInProgress {
+			existing.Active() {
 			return domain.Session{}, &domain.ActiveSessionError{SessionID: existing.ID}
 		}
 	}
@@ -149,7 +149,7 @@ func (f *fakeSessionRepo) CreateReplacingActive(ctx context.Context, session dom
 	for id, existing := range f.sessions {
 		if existing.Owner == session.Owner &&
 			existing.ScenarioCode == session.ScenarioCode &&
-			existing.Status == domain.StatusInProgress {
+			existing.Active() {
 			existing.Status = domain.StatusAbandoned
 			now := time.Now()
 			existing.FinishedAt = &now
@@ -180,8 +180,7 @@ func (f *fakeSessionRepo) GetActiveByOwner(
 	var active *domain.Session
 
 	for _, session := range f.sessions {
-		if session.Owner != owner ||
-			session.Status != domain.StatusInProgress {
+		if session.Owner != owner || !session.Active() {
 			continue
 		}
 
@@ -232,7 +231,7 @@ func (f *fakeSessionRepo) GetActiveByOwnerScenario(
 	for _, session := range f.sessions {
 		if session.Owner != owner ||
 			session.ScenarioCode != scenarioCode ||
-			session.Status != domain.StatusInProgress {
+			!session.Active() {
 			continue
 		}
 
@@ -262,6 +261,10 @@ func (f *fakeSessionRepo) SaveAnswer(
 		return domain.Session{}, domain.ErrNotFound
 	}
 
+	if !session.Active() {
+		return domain.Session{}, domain.ErrSessionFinished
+	}
+
 	for _, existing := range f.answers[session.ID] {
 		if existing.StepCode == answer.StepCode {
 			return domain.Session{}, errors.New("duplicate answer")
@@ -281,6 +284,7 @@ func (f *fakeSessionRepo) SaveAnswer(
 		session.FinishedAt = &now
 	} else {
 		session.CurrentStepCode = nextStepCode
+		f.resume(&session)
 	}
 
 	f.sessions[session.ID] = session
@@ -318,12 +322,19 @@ func (f *fakeSessionRepo) Abandon(ctx context.Context, id uuid.UUID) error {
 		return domain.ErrNotFound
 	}
 
-	now := time.Now()
-	session.Status = domain.StatusAbandoned
-	session.FinishedAt = &now
+	session.Status = domain.StatusPaused
+	session.FinishedAt = nil
 	f.sessions[id] = session
 
 	return nil
+}
+
+// resume повторяет UPDATE в SaveAnswer: принятый ответ возвращает сессию
+// из паузы в работу.
+func (f *fakeSessionRepo) resume(session *domain.Session) {
+	if session.Status == domain.StatusPaused {
+		session.Status = domain.StatusInProgress
+	}
 }
 
 func (f *fakeSessionRepo) ListCompleted(
@@ -720,21 +731,49 @@ func TestAbandon(t *testing.T) {
 	snapshot, err := service.Start(ctx, owner, "too-good-price", false)
 	require.NoError(t, err)
 
-	t.Run("прерывает незавершённую", func(t *testing.T) {
+	t.Run("ставит на паузу, а не завершает", func(t *testing.T) {
 		err := service.Abandon(ctx, owner, snapshot.Session.ID)
 
 		require.NoError(t, err)
 
 		got, err := service.Get(ctx, owner, snapshot.Session.ID)
 		require.NoError(t, err)
-		require.Equal(t, domain.StatusAbandoned, got.Session.Status)
-		require.Nil(t, got.CurrentStep)
+		require.Equal(t, domain.StatusPaused, got.Session.Status)
+		require.Nil(t, got.Session.FinishedAt)
+
+		// Кнопка обещает возможность продолжить: текущий шаг сохранён.
+		require.NotNil(t, got.CurrentStep)
+		require.Equal(t, snapshot.Session.CurrentStepCode, got.CurrentStep.Code)
 	})
 
 	t.Run("повторное прерывание безвредно", func(t *testing.T) {
 		err := service.Abandon(ctx, owner, snapshot.Session.ID)
 
 		require.NoError(t, err)
+	})
+
+	t.Run("с паузы тренировка продолжается", func(t *testing.T) {
+		outcome, err := service.SubmitAnswer(ctx, owner, snapshot.Session.ID,
+			snapshot.Session.CurrentStepCode, "c")
+
+		require.NoError(t, err)
+		require.Equal(t, domain.StatusInProgress, outcome.Snapshot.Session.Status)
+		require.NotNil(t, outcome.Snapshot.CurrentStep)
+	})
+
+	t.Run("перезапуск вытесняет приостановленную", func(t *testing.T) {
+		restarted, err := service.Start(ctx, owner, "too-good-price", true)
+		require.NoError(t, err)
+		require.NoError(t, service.Abandon(ctx, owner, restarted.Session.ID))
+
+		// Пауза не должна мешать начать сценарий заново.
+		fresh, err := service.Start(ctx, owner, "too-good-price", true)
+		require.NoError(t, err)
+		require.NotEqual(t, restarted.Session.ID, fresh.Session.ID)
+
+		replaced, err := service.Get(ctx, owner, restarted.Session.ID)
+		require.NoError(t, err)
+		require.Equal(t, domain.StatusAbandoned, replaced.Session.Status)
 	})
 
 	t.Run("чужую сессию прервать нельзя", func(t *testing.T) {

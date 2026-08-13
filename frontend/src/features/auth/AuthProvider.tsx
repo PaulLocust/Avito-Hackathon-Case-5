@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import { getCurrentUser, logout as logoutRequest } from '../../api/auth';
 import { clearStoredToken, getStoredToken, storeToken } from '../../api/client';
@@ -8,6 +9,7 @@ import { AuthContext } from './authContext';
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [initializing, setInitializing] = useState(true);
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     let cancelled = false;
@@ -37,10 +39,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const signIn = useCallback((response: AuthResponse) => {
-    storeToken(response.token);
-    setUser(response.user);
-  }, []);
+  const signIn = useCallback(
+    (response: AuthResponse) => {
+      // Кеш персональных запросов (прогресс, история попыток) сбрасывается
+      // при смене пользователя: данные предыдущего аккаунта не должны
+      // всплывать у нового (гость → аккаунт, A → B).
+      queryClient.clear();
+      storeToken(response.token);
+      setUser(response.user);
+    },
+    [queryClient],
+  );
 
   const signOut = useCallback(async () => {
     try {
@@ -50,7 +59,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     clearStoredToken();
     setUser(null);
-  }, []);
+    queryClient.clear();
+  }, [queryClient]);
 
   const value = useMemo(
     () => ({ user, initializing, signIn, signOut }),

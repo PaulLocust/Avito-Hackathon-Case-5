@@ -141,6 +141,25 @@ func (f *fakeSessionRepo) Create(ctx context.Context, session domain.Session) (d
 	return session, nil
 }
 
+// CreateReplacingActive повторяет реальную атомарность: активная сессия
+// владельца по сценарию прерывается, новая вставляется.
+func (f *fakeSessionRepo) CreateReplacingActive(ctx context.Context, session domain.Session) (domain.Session, error) {
+	_ = ctx
+
+	for id, existing := range f.sessions {
+		if existing.Owner == session.Owner &&
+			existing.ScenarioCode == session.ScenarioCode &&
+			existing.Status == domain.StatusInProgress {
+			existing.Status = domain.StatusAbandoned
+			now := time.Now()
+			existing.FinishedAt = &now
+			f.sessions[id] = existing
+		}
+	}
+
+	return f.Create(ctx, session)
+}
+
 func (f *fakeSessionRepo) Get(ctx context.Context, id uuid.UUID) (domain.Session, error) {
 	_ = ctx
 

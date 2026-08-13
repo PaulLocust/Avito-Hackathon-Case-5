@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
 
-import { abandonSession, getSession, submitAnswer } from '../../api/sessions';
+import { getSession, submitAnswer } from '../../api/sessions';
 import type { AnswerResult, OptionView, StepView, SubmitAnswerRequest } from '../../api/types';
 import { ApiError } from '../../entities/apiError';
 import { roleLabel } from '../../entities/labels';
@@ -46,11 +46,6 @@ export function SessionPage() {
     },
   });
 
-  const abandon = useMutation({
-    mutationFn: () => abandonSession(sessionId),
-    onSuccess: () => navigate('/'),
-  });
-
   const session = answer?.session ?? sessionQuery.data;
 
   const handleSelect = (option: OptionView) => {
@@ -80,13 +75,15 @@ export function SessionPage() {
   };
 
   const confirmAbandon = () => {
+    // Пауза, а не завершение: сессия остаётся in_progress и продолжается
+    // с главной через блок «Продолжить тренировку» (FR12). Полностью
+    // отказаться от попытки можно через «Начать заново» при старте.
     Modal.confirm({
       title: 'Прервать тренировку?',
       content: 'Незавершённую тренировку можно будет продолжить с главной страницы.',
       okText: 'Прервать',
-      okButtonProps: { danger: true },
       cancelText: 'Остаться',
-      onOk: () => abandon.mutateAsync(),
+      onOk: () => navigate('/'),
     });
   };
 

@@ -99,6 +99,9 @@ type RiskSignalRepository interface {
 }
 type SessionRepository interface {
 	Create(ctx context.Context, session domain.Session) (domain.Session, error)
+	// CreateReplacingActive — атомарный перезапуск: прерывает активную
+	// сессию владельца по сценарию и создаёт новую в одной транзакции.
+	CreateReplacingActive(ctx context.Context, session domain.Session) (domain.Session, error)
 	Get(ctx context.Context, id uuid.UUID) (domain.Session, error)
 	GetActiveByOwner(ctx context.Context, owner domain.Owner) (domain.Session, error)
 	GetActiveByOwnerScenario(ctx context.Context, owner domain.Owner, scenarioCode string) (domain.Session, error)

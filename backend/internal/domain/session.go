@@ -11,6 +11,7 @@ type SessionStatus string
 const (
 	StatusInProgress SessionStatus = "in_progress"
 	StatusCompleted  SessionStatus = "completed"
+	StatusPaused     SessionStatus = "paused"
 	StatusAbandoned  SessionStatus = "abandoned"
 )
 

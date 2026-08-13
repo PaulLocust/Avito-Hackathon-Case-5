@@ -95,6 +95,50 @@ func (r *sessionRepository) Create(ctx context.Context, session domain.Session) 
 	return created, nil
 }
 
+// CreateReplacingActive атомарно перезапускает сценарий: активная сессия
+// владельца прерывается, новая создаётся — в одной транзакции. Неудача
+// вставки не теряет прежнюю попытку, а два параллельных перезапуска не
+// оставляют двух активных сессий (частичный уникальный индекс FR12).
+func (r *sessionRepository) CreateReplacingActive(ctx context.Context, session domain.Session) (domain.Session, error) {
+	if session.ID == uuid.Nil {
+		session.ID = uuid.New()
+	}
+
+	userID, guestSessionID := ownerColumns(session.Owner)
+	condition, ownerID := ownerWhere(session.Owner, 2)
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("начало транзакции перезапуска: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, execErr := tx.Exec(ctx,
+		"UPDATE sessions SET status = 'abandoned', finished_at = now()"+
+			" WHERE "+condition+" AND scenario_code = $1 AND status IN ('in_progress', 'paused')",
+		session.ScenarioCode, ownerID); execErr != nil {
+		return domain.Session{}, fmt.Errorf("прерывание активной сессии перед перезапуском: %w", execErr)
+	}
+
+	created, err := scanSession(tx.QueryRow(ctx, `
+		INSERT INTO sessions (id, user_id, guest_session_id, scenario_id, scenario_code, scenario_version,
+		                      status, current_step_code, score)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING `+sessionColumns,
+		session.ID, userID, guestSessionID, session.ScenarioID, session.ScenarioCode,
+		session.ScenarioVersion, string(session.Status), session.CurrentStepCode, session.Score,
+	))
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("создание сессии при перезапуске: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Session{}, fmt.Errorf("завершение транзакции перезапуска: %w", err)
+	}
+
+	return created, nil
+}
+
 func (r *sessionRepository) Get(ctx context.Context, id uuid.UUID) (domain.Session, error) {
 	session, err := scanSession(r.pool.QueryRow(ctx,
 		"SELECT "+sessionColumns+" FROM sessions WHERE id = $1", id))
@@ -116,7 +160,7 @@ func (r *sessionRepository) GetActiveByOwner(ctx context.Context, owner domain.O
 	condition, ownerID := ownerWhere(owner, 1)
 
 	session, err := scanSession(r.pool.QueryRow(ctx,
-		"SELECT "+sessionColumns+" FROM sessions WHERE "+condition+" AND status = 'in_progress'"+
+		"SELECT "+sessionColumns+" FROM sessions WHERE "+condition+" AND status IN ('in_progress', 'paused')"+
 			" ORDER BY started_at DESC LIMIT 1",
 		ownerID))
 	if err != nil {
@@ -139,7 +183,7 @@ func (r *sessionRepository) GetActiveByOwnerScenario(
 
 	session, err := scanSession(r.pool.QueryRow(ctx,
 		"SELECT "+sessionColumns+
-			" FROM sessions WHERE "+condition+" AND scenario_code = $1 AND status = 'in_progress'"+
+			" FROM sessions WHERE "+condition+" AND scenario_code = $1 AND status IN ('in_progress', 'paused')"+
 			" ORDER BY started_at DESC LIMIT 1",
 		scenarioCode, ownerID))
 	if err != nil {
@@ -164,6 +208,37 @@ func (r *sessionRepository) SaveAnswer(
 		return domain.Session{}, fmt.Errorf("начало транзакции фиксации ответа: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Блокируем строку сессии: конкурентные отправки сериализуются, а
+	// проверки статуса и текущего шага выполняются под блокировкой, а не
+	// по снапшоту, прочитанному сервисом до транзакции.
+	session, err := scanSession(tx.QueryRow(ctx,
+		"SELECT "+sessionColumns+" FROM sessions WHERE id = $1 FOR UPDATE", answer.SessionID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Session{}, domain.ErrNotFound
+		}
+
+		return domain.Session{}, fmt.Errorf("чтение сессии %s под блокировкой: %w", answer.SessionID, err)
+	}
+
+	// Ответ на паузе допустим: он же снимает сессию с паузы (см. UPDATE ниже).
+	if !session.Active() {
+		return domain.Session{}, domain.ErrSessionFinished
+	}
+	if session.CurrentStepCode != answer.StepCode {
+		return domain.Session{}, domain.ErrStepNotCurrent
+	}
+
+	// Позиция считается авторитетно внутри транзакции: расчёт в сервисе
+	// через len(answers)+1 при параллельных отправках дал бы одинаковые
+	// позиции у разных ответов.
+	if posErr := tx.QueryRow(ctx, `
+		SELECT COALESCE(MAX(position), 0) + 1
+		FROM answers
+		WHERE session_id = $1`, answer.SessionID).Scan(&answer.Position); posErr != nil {
+		return domain.Session{}, fmt.Errorf("расчёт позиции ответа: %w", posErr)
+	}
 
 	insert := `
 		INSERT INTO answers (session_id, step_code, option_code, outcome, score_delta,
@@ -190,7 +265,7 @@ func (r *sessionRepository) SaveAnswer(
 	} else {
 		if _, execErr := tx.Exec(ctx, `
 			UPDATE sessions
-			SET score = score + $1, current_step_code = $3
+			SET score = score + $1, current_step_code = $3, status = 'in_progress'
 			WHERE id = $2`,
 			answer.ScoreDelta, answer.SessionID, nextStepCode,
 		); execErr != nil {
@@ -198,7 +273,7 @@ func (r *sessionRepository) SaveAnswer(
 		}
 	}
 
-	session, err := scanSession(tx.QueryRow(ctx,
+	session, err = scanSession(tx.QueryRow(ctx,
 		"SELECT "+sessionColumns+" FROM sessions WHERE id = $1", answer.SessionID))
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("чтение сессии %s после ответа: %w", answer.SessionID, err)
@@ -279,9 +354,11 @@ func (r *sessionRepository) ListAnswers(ctx context.Context, sessionID uuid.UUID
 }
 
 func (r *sessionRepository) Abandon(ctx context.Context, id uuid.UUID) error {
+	// Пауза не проставляет finished_at: сессия не завершена, её продолжают
+	// с того же шага.
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE sessions
-		SET status = 'abandoned', finished_at = now()
+		SET status = 'paused'
 		WHERE id = $1 AND status = 'in_progress'`, id)
 	if err != nil {
 		return fmt.Errorf("прерывание сессии %s: %w", id, err)
@@ -356,12 +433,39 @@ func (r *sessionRepository) PreviousCompleted(
 // ClaimByGuest переносит все сессии гостя на аккаунт после Register/Login.
 // Это и есть момент, когда накопленная гостевая аналитика «материализуется»
 // под учётной записью и становится доступна через /progress (FR12).
+//
+// Перенос идёт в одной транзакции. Активные сессии гостя, которые
+// конфликтуют с активными сессиями пользователя по тому же сценарию,
+// прерываются: иначе частичный уникальный индекс sessions_single_active_idx
+// ронял бы весь UPDATE и гость молча терял бы весь накопленный прогресс.
+// Сохраняется активная попытка пользователя — она его «настоящие» данные.
 func (r *sessionRepository) ClaimByGuest(ctx context.Context, guestSessionID, userID uuid.UUID) error {
-	_, err := r.pool.Exec(ctx,
-		`UPDATE sessions SET user_id = $2, guest_session_id = NULL WHERE guest_session_id = $1`,
-		guestSessionID, userID)
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
+		return fmt.Errorf("начало транзакции переноса гостя: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE sessions s
+		SET status = 'abandoned', finished_at = now()
+		WHERE s.guest_session_id = $1 AND s.status IN ('in_progress', 'paused')
+		  AND EXISTS (
+		      SELECT 1 FROM sessions u
+		      WHERE u.user_id = $2 AND u.scenario_code = s.scenario_code
+		        AND u.status IN ('in_progress', 'paused'))`,
+		guestSessionID, userID); err != nil {
+		return fmt.Errorf("прерывание конфликтующих сессий гостя %s: %w", guestSessionID, err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE sessions SET user_id = $2, guest_session_id = NULL WHERE guest_session_id = $1`,
+		guestSessionID, userID); err != nil {
 		return fmt.Errorf("перенос сессий гостя %s: %w", guestSessionID, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("завершение транзакции переноса гостя: %w", err)
 	}
 
 	return nil

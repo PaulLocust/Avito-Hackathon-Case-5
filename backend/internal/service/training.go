@@ -38,10 +38,6 @@ func (s *trainingService) Start(
 		return domain.SessionSnapshot{}, err
 	}
 
-	if ensureErr := s.ensureNoActiveSession(ctx, owner, scenarioCode, restart); ensureErr != nil {
-		return domain.SessionSnapshot{}, ensureErr
-	}
-
 	startStep, ok := scenario.StartStep()
 	if !ok {
 		return domain.SessionSnapshot{}, fmt.Errorf("сценарий %s без стартового шага", scenario.Code)
@@ -56,7 +52,7 @@ func (s *trainingService) Start(
 		CurrentStepCode: startStep.Code,
 	}
 
-	created, err := s.sessions.Create(ctx, session)
+	created, err := s.createSession(ctx, owner, session, restart)
 	if err != nil {
 		return domain.SessionSnapshot{}, err
 	}
@@ -66,28 +62,30 @@ func (s *trainingService) Start(
 	return s.snapshot(ctx, created, scenario)
 }
 
-// ensureNoActiveSession проверяет незавершённую сессию по сценарию: без
-// restart она — ошибка, с restart прерывается.
-func (s *trainingService) ensureNoActiveSession(ctx context.Context, owner domain.Owner, scenarioCode string, restart bool) error {
-	active, err := s.sessions.GetActiveByOwnerScenario(ctx, owner, scenarioCode)
-	if errors.Is(err, domain.ErrNotFound) {
-		return nil
+// createSession соблюдает инвариант «одна незавершённая сессия на сценарий»
+// (FR12). Без restart активная сессия — *domain.ActiveSessionError, с restart
+// перезапуск выполняется атомарно одной транзакцией: прервать прежнюю
+// попытку и вставить новую (неудача вставки не теряет прежнюю).
+func (s *trainingService) createSession(
+	ctx context.Context,
+	owner domain.Owner,
+	session domain.Session,
+	restart bool,
+) (domain.Session, error) {
+	active, err := s.sessions.GetActiveByOwnerScenario(ctx, owner, session.ScenarioCode)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return domain.Session{}, fmt.Errorf("поиск активной сессии по сценарию %s: %w", session.ScenarioCode, err)
 	}
 
-	if err != nil {
-		return fmt.Errorf("поиск активной сессии по сценарию %s: %w", scenarioCode, err)
+	if err == nil && !restart {
+		return domain.Session{}, &domain.ActiveSessionError{SessionID: active.ID}
 	}
 
-	if !restart {
-		return &domain.ActiveSessionError{SessionID: active.ID}
+	if restart {
+		return s.sessions.CreateReplacingActive(ctx, session)
 	}
 
-	abandonErr := s.sessions.Abandon(ctx, active.ID)
-	if abandonErr != nil && !errors.Is(abandonErr, domain.ErrNotFound) {
-		return fmt.Errorf("прерывание предыдущей попытки: %w", abandonErr)
-	}
-
-	return nil
+	return s.sessions.Create(ctx, session)
 }
 
 // Get отдаёт состояние сессии владельцу; чужая сессия — domain.ErrNotFound,
@@ -143,7 +141,7 @@ func (s *trainingService) SubmitAnswer(
 		return domain.AnswerOutcome{}, fmt.Errorf("поиск ответа сессии %s: %w", session.ID, getErr)
 	}
 
-	if session.Status != domain.StatusInProgress {
+	if !session.Active() {
 		return domain.AnswerOutcome{}, domain.ErrSessionFinished
 	}
 
@@ -172,6 +170,9 @@ func (s *trainingService) SubmitAnswer(
 		return domain.AnswerOutcome{}, fmt.Errorf("список ответов сессии %s: %w", session.ID, err)
 	}
 
+	// Позиция не вычисляется здесь: она авторитетно определяется в
+	// транзакции сохранения (MAX(position)+1), иначе параллельные отправки
+	// получили бы одинаковые позиции.
 	answer := domain.Answer{
 		SessionID:       session.ID,
 		StepCode:        stepCode,
@@ -179,7 +180,6 @@ func (s *trainingService) SubmitAnswer(
 		Outcome:         option.Outcome,
 		ScoreDelta:      option.Score,
 		RiskSignalCodes: step.RiskSignalCodes,
-		Position:        len(answers) + 1,
 	}
 
 	finished := next.Type == domain.StepTypeTerminal
@@ -223,7 +223,7 @@ func (s *trainingService) SubmitAnswer(
 	}, nil
 }
 
-// Abandon прерывает незавершённую сессию. Завершённую прерывать нельзя —
+// Abandon прерывает незавершённую сессию (пауза). Завершённую прерывать нельзя —
 // domain.ErrSessionFinished; повторный вызов прерванной безвреден.
 func (s *trainingService) Abandon(ctx context.Context, owner domain.Owner, sessionID uuid.UUID) error {
 	session, err := s.sessions.Get(ctx, sessionID)
@@ -238,10 +238,12 @@ func (s *trainingService) Abandon(ctx context.Context, owner domain.Owner, sessi
 	switch session.Status {
 	case domain.StatusCompleted:
 		return domain.ErrSessionFinished
-	case domain.StatusAbandoned:
+	case domain.StatusPaused:
 		return nil
 	case domain.StatusInProgress:
 		return s.sessions.Abandon(ctx, sessionID)
+	case domain.StatusAbandoned:
+		return domain.ErrSessionFinished
 	}
 
 	return domain.ErrSessionFinished

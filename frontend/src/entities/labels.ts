@@ -52,6 +52,7 @@ export const senderLabels: Record<MessageSender, string> = {
 
 export const sessionStatusLabels: Record<SessionStatus, string> = {
   in_progress: 'В процессе',
+  paused: 'На паузе',
   completed: 'Завершена',
   abandoned: 'Прервана',
 };

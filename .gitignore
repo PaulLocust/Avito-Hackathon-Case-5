@@ -36,6 +36,11 @@ pnpm-debug.log*
 # Правило снимается, если команда решит коммитить их для стабильности сборки.
 /frontend/src/api/schema.ts
 
+# Отчёты Playwright
+/frontend/playwright-report/
+/frontend/test-results/
+/frontend/blob-report/
+
 # ────────────────────────────── Окружение ──────────────────────────────
 # Секреты в репозиторий не попадают (SEC5). Пример — в .env.example.
 .env

@@ -46,11 +46,6 @@ export function SessionPage() {
     },
   });
 
-  const abandon = useMutation({
-    mutationFn: () => abandonSession(sessionId),
-    onSuccess: () => navigate('/'),
-  });
-
   const session = answer?.session ?? sessionQuery.data;
 
   const handleSelect = (option: OptionView) => {
@@ -79,14 +74,27 @@ export function SessionPage() {
     setSubmitError(null);
   };
 
+  const abandon = useMutation({
+    mutationFn: () => abandonSession(sessionId),
+    // Пауза, а не завершение: сессия получает статус paused, сохраняет шаг
+    // и балл и предлагается к продолжению с главной (FR12). Ошибка запроса
+    // не блокирует уход: сессия останется in_progress и всё равно попадёт
+    // в «Продолжить тренировку». Полностью отказаться от попытки можно
+    // через «Начать заново» при старте.
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ['progress'] });
+      void queryClient.invalidateQueries({ queryKey: ['session', sessionId] });
+      navigate('/');
+    },
+  });
+
   const confirmAbandon = () => {
     Modal.confirm({
       title: 'Прервать тренировку?',
       content: 'Незавершённую тренировку можно будет продолжить с главной страницы.',
       okText: 'Прервать',
-      okButtonProps: { danger: true },
       cancelText: 'Остаться',
-      onOk: () => abandon.mutateAsync(),
+      onOk: () => abandon.mutate(),
     });
   };
 
@@ -198,7 +206,7 @@ export function SessionPage() {
         />
       )}
 
-      <Button icon={<PauseCircleOutlined />} onClick={confirmAbandon}>
+      <Button icon={<PauseCircleOutlined />} loading={abandon.isPending} onClick={confirmAbandon}>
         Прервать тренировку
       </Button>
     </Space>
